@@ -10,7 +10,9 @@ import akka.japi.pf.ReceiveBuilder;
 public abstract class AbstractClient extends AbstractActor {
     private final Optional<ActorRef> defaultTargetReplica;
     private final Optional<ActorRef> listener;
+    /** How much time the client should wait for a read result before going in timeout. */
     private final long readTimeoutDelay;
+    /** How much time the client should wait for a write result before going in timeout. */
     private final long writeTimeoutDelay;
 
     AbstractClient(long readTimeoutDelay, long writeTimeoutDelay) {
@@ -37,7 +39,9 @@ public abstract class AbstractClient extends AbstractActor {
     // =================================================================================
 
     public static class ReadRequest {
+        /** Reference to the replica contacted by this client to read the shared data. */
         ActorRef replica;
+        /** Index of the value to be read by this request. */
         int index;
 
         public ReadRequest(int index) {
@@ -51,8 +55,11 @@ public abstract class AbstractClient extends AbstractActor {
     }
 
     public static class WriteRequest {
+        /** Reference to the replica contacted by this client to write on the shared data. */
         ActorRef replica;
+        /** Index of the value to be written by this request. */
         int index;
+        /** Value to be written.  */
         int value;
 
         public WriteRequest(int index, int value) {
@@ -67,9 +74,13 @@ public abstract class AbstractClient extends AbstractActor {
     }
 
     private static class Result implements Serializable {
+        /** Whether the operation completed successfully or not. */
         public final Boolean success;
+        /** Index of the value involved in the request. */
         public final int index;
+        /** Value of the required data (in the case of a read operation). */
         public final Integer value;
+        /** Which replica handled the operation. */
         public final int fromReplica;
 
         public Result(boolean success, int index, Integer value, int fromReplica) {

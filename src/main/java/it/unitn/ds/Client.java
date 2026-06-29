@@ -22,12 +22,18 @@ public class Client extends AbstractClient {
 
     @Override
     public void sendRead(ActorRef replica, int index) {
-        // TODO: implement        
+        // TODO: implement
+        // - Send message to replica with request details
+        // - Set up timeout mechanism
+
     }
 
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
         // TODO: implement
+        // - Send message to replica with request details
+        // - Set up timeout mechanism
+
     }
 
     @Override
