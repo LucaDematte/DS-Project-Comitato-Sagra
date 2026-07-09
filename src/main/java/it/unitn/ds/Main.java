@@ -2,6 +2,7 @@ package it.unitn.ds;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
@@ -37,8 +38,12 @@ public class Main {
         }
 
         // TODO: Create your clients
+        ActorRef client1 = system.actorOf(
+                Client.props(AbstractReplica.MAX_LATENCY, 0, Optional.of(replicas.get(0)))
+        );
         
         // TODO: Implement your main logic
+        client1.tell(new AbstractClient.ReadRequest(0), ActorRef.noSender());
 
         system.terminate();
 
