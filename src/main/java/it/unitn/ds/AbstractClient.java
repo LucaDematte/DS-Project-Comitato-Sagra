@@ -1,18 +1,22 @@
 package it.unitn.ds;
 
-import java.io.Serializable;
-import java.util.Optional;
-
 import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.japi.pf.ReceiveBuilder;
 
+import java.io.Serializable;
+import java.util.Optional;
+
 public abstract class AbstractClient extends AbstractActor {
     private final Optional<ActorRef> defaultTargetReplica;
     private final Optional<ActorRef> listener;
-    /** How much time the client should wait for a read result before going in timeout. */
+    /**
+     * How much time(ms) the client should wait for a read result before going in timeout.
+     */
     private final long readTimeoutDelay;
-    /** How much time the client should wait for a write result before going in timeout. */
+    /**
+     * How much time(ms) the client should wait for a write result before going in timeout.
+     */
     private final long writeTimeoutDelay;
 
     AbstractClient(long readTimeoutDelay, long writeTimeoutDelay) {
@@ -39,9 +43,13 @@ public abstract class AbstractClient extends AbstractActor {
     // =================================================================================
 
     public static class ReadRequest {
-        /** Reference to the replica contacted by this client to read the shared data. */
+        /**
+         * Reference to the replica contacted by this client to read the shared data.
+         */
         ActorRef replica;
-        /** Index of the value to be read by this request. */
+        /**
+         * Index of the value to be read by this request.
+         */
         int index;
 
         public ReadRequest(int index) {
@@ -55,11 +63,17 @@ public abstract class AbstractClient extends AbstractActor {
     }
 
     public static class WriteRequest {
-        /** Reference to the replica contacted by this client to write on the shared data. */
+        /**
+         * Reference to the replica contacted by this client to write on the shared data.
+         */
         ActorRef replica;
-        /** Index of the value to be written by this request. */
+        /**
+         * Index of the value to be written by this request.
+         */
         int index;
-        /** Value to be written.  */
+        /**
+         * Value to be written.
+         */
         int value;
 
         public WriteRequest(int index, int value) {
@@ -74,13 +88,21 @@ public abstract class AbstractClient extends AbstractActor {
     }
 
     private static class Result implements Serializable {
-        /** Whether the operation completed successfully or not. */
+        /**
+         * Whether the operation completed successfully or not.
+         */
         public final Boolean success;
-        /** Index of the value involved in the request. */
+        /**
+         * Index of the value involved in the request.
+         */
         public final int index;
-        /** Value of the required data (in the case of a read operation). */
+        /**
+         * Value of the required data (in the case of a read operation).
+         */
         public final Integer value;
-        /** Which replica handled the operation. */
+        /**
+         * Which replica handled the operation.
+         */
         public final int fromReplica;
 
         public Result(boolean success, int index, Integer value, int fromReplica) {
@@ -93,7 +115,7 @@ public abstract class AbstractClient extends AbstractActor {
         @Override
         public boolean equals(Object obj) {
             if (obj instanceof Result) {
-                return ((Result)obj).success == this.success && ((Result)obj).value == this.value && ((Result)obj).index == this.index && ((Result)obj).fromReplica == this.fromReplica;
+                return ((Result) obj).success == this.success && ((Result) obj).value == this.value && ((Result) obj).index == this.index && ((Result) obj).fromReplica == this.fromReplica;
             }
             return super.equals(obj);
         }
@@ -130,7 +152,7 @@ public abstract class AbstractClient extends AbstractActor {
         @Override
         public boolean equals(Object obj) {
             if (obj instanceof Timeout) {
-                return ((Timeout)obj).client.equals(this.client) && ((Timeout)obj).replica.equals(this.replica) && ((Timeout)obj).index == this.index;
+                return ((Timeout) obj).client.equals(this.client) && ((Timeout) obj).replica.equals(this.replica) && ((Timeout) obj).index == this.index;
             }
             return super.equals(obj);
         }
@@ -144,6 +166,7 @@ public abstract class AbstractClient extends AbstractActor {
 
     public static class WriteTimeout extends Timeout {
         public final int value;
+
         public WriteTimeout(ActorRef client, ActorRef replica, int index, int value) {
             super(client, replica, index);
             this.value = value;
@@ -168,7 +191,7 @@ public abstract class AbstractClient extends AbstractActor {
 
     /**
      * This function must be invoked whenever the system answers to a READ request
-     * 
+     *
      * @param readResult The status of system's answer
      */
     final void callbackOnReadResult(AbstractClient.ReadResult readResult) {
@@ -178,7 +201,7 @@ public abstract class AbstractClient extends AbstractActor {
 
     /**
      * This function must be invoked whenever the system answers to a WRITE request
-     * 
+     *
      * @param writeResult The status of system's answer
      */
     final void callbackOnWriteResult(AbstractClient.WriteResult writeResult) {
@@ -190,7 +213,7 @@ public abstract class AbstractClient extends AbstractActor {
      * This function must be invoked whenever the client senses a timed-out read request
      */
     final void callbackOnReadTimeout(AbstractClient.ReadTimeout timeout) {
-        log("TIMEOUT READ request to "+ timeout.replica.path().name() + " (" + timeout.index + ")");
+        log("TIMEOUT READ request to " + timeout.replica.path().name() + " (" + timeout.index + ")");
         listener.ifPresent(l -> l.tell(timeout, getSelf()));
     }
 
@@ -229,24 +252,28 @@ public abstract class AbstractClient extends AbstractActor {
     // =================================================================================
     // Abstract Methods
     // =================================================================================
+
     /**
      * Send a read request to a specific replica
+     *
      * @param replica replica's ActorRef
-     * @param index position's index to read
+     * @param index   position's index to read
      */
     abstract public void sendRead(ActorRef replica, int index);
+
     /**
      * Send a write request to a specific replica
+     *
      * @param replica replica's ActorRef
-     * @param index position's index to write to
-     * @param value new position[index] value
+     * @param index   position's index to write to
+     * @param value   new position[index] value
      */
     abstract public void sendWrite(ActorRef replica, int index, int value);
 
     public final ReceiveBuilder createBaseReceiveBuilder() {
         return receiveBuilder()
-            .match(AbstractClient.ReadRequest.class, this::onReadRequest)
-            .match(AbstractClient.WriteRequest.class, this::onWriteRequest);
+                .match(AbstractClient.ReadRequest.class, this::onReadRequest)
+                .match(AbstractClient.WriteRequest.class, this::onWriteRequest);
     }
 
 }

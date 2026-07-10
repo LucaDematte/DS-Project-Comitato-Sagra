@@ -1,16 +1,17 @@
 package it.unitn.ds;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
-
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import it.unitn.ds.AbstractReplica.InitSystem;
 
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+
 public class Main {
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
         System.out.println("========================================");
         System.out.println("START");
         System.out.println("========================================\n");
@@ -25,10 +26,10 @@ public class Main {
         Map<Integer, ActorRef> replicas = new HashMap<>(N_REPLICAS);
         for (int i = 0; i < N_REPLICAS; i++) {
             replicas.put(i,
-                system.actorOf(
-                    Replica.props(i, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL),
-                    "Replica_" + i
-                )
+                    system.actorOf(
+                            Replica.props(i, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL),
+                            "Replica_" + i
+                    )
             );
         }
 
@@ -39,12 +40,18 @@ public class Main {
 
         // TODO: Create your clients
         ActorRef client1 = system.actorOf(
-                Client.props(AbstractReplica.MAX_LATENCY, 0, Optional.of(replicas.get(0)))
+                Client.props(1000, 1000, Optional.of(replicas.get(0)))
         );
-        
+
         // TODO: Implement your main logic
         client1.tell(new AbstractClient.ReadRequest(0), ActorRef.noSender());
+        client1.tell(new AbstractClient.WriteRequest(1, 30), ActorRef.noSender());
 
+        System.in.read();
+
+        client1.tell(new AbstractClient.ReadRequest(1), ActorRef.noSender());
+
+        System.in.read();
         system.terminate();
 
         System.out.println("\n========================================");

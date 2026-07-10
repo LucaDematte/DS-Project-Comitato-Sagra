@@ -2,10 +2,10 @@ package it.unitn.ds.cs.messages;
 
 import java.io.Serializable;
 
-public class CSRead implements Serializable {
+public class CSReadRequest implements Serializable {
     public final int index;
 
-    public CSRead(int index) {
+    public CSReadRequest(int index) {
         this.index = index;
     }
 }
