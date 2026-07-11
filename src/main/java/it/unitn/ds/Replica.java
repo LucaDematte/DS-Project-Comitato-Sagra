@@ -3,8 +3,7 @@ package it.unitn.ds;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 import akka.pattern.Patterns;
-import it.unitn.ds.cs.CSUpdateKey;
-import it.unitn.ds.cs.CSUpdateValue;
+import it.unitn.ds.cs.*;
 import it.unitn.ds.cs.messages.*;
 
 import java.io.Serializable;
@@ -17,14 +16,12 @@ public class Replica extends AbstractReplica {
     Map<Integer, ActorRef> replicas = new HashMap<>(AbstractReplica.POSITIONS_LIST_LENGTH);
     int previous, next;
     int coordinatorId;
-    Map<UUID, ActorRef> clientsRequests = new HashMap<>();
-    Map<CSUpdateKey, UUID> uuidBindings = new HashMap<>();
     int[] positions; //maybe do a hashmap
-    Map<CSUpdateKey, CSUpdateValue> updates = new HashMap<>();
+    UpdateLog updateLog;
 
     // Coordinator
-    CSUpdateKey updateKey;
-    int receivedAcks;
+    CSUpdateKey nextUpdateKey;
+    Map<CSUpdateKey, Integer> receivedAcks = new HashMap<>();
     Queue<CSWriteForward> queue = new LinkedList<>();
     boolean processing;
 
@@ -35,8 +32,9 @@ public class Replica extends AbstractReplica {
     public Replica(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, Optional<ActorRef> listener) {
         super(id, minLatency, maxLatency, coordinatorBeatInterval, listener);
         this.positions = new int[AbstractReplica.POSITIONS_LIST_LENGTH];
-        this.updateKey = new CSUpdateKey(0, 0);
+        this.nextUpdateKey = new CSUpdateKey(0, 0);
         this.processing = false;
+        this.updateLog = new UpdateLog();
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -74,6 +72,10 @@ public class Replica extends AbstractReplica {
         }
     }
 
+    // =================================================================================
+    // Read Requests
+    // =================================================================================
+
     public void handleReadRequest(CSReadRequest msg) {
         try {
             int result = this.positions[msg.index];
@@ -83,9 +85,13 @@ public class Replica extends AbstractReplica {
         }
     }
 
+    // =================================================================================
+    // Write Requests
+    // =================================================================================
+
     public void handleWriteRequest(CSWriteRequest msg) {
-        UUID uuid = UUID.randomUUID();
-        this.clientsRequests.put(uuid, getSender());
+        UUID uuid = this.updateLog.addLocal(msg.index, msg.value, UpdateStatus.UNPROCESSED, getSender());
+        log("Adding new local update coming from client " + getSender().path().name() + " with uuid " + uuid);
 
         Duration timeout = Duration.ofMillis(AbstractReplica.MAX_LATENCY * 2);
         CompletionStage<Object> future = Patterns.ask(replicas.get(this.coordinatorId), new CSWriteForward(msg, uuid), timeout);
@@ -100,46 +106,81 @@ public class Replica extends AbstractReplica {
     public void handleWriteRequestCoordinator(CSWriteRequest msg) {
 //        log("Write Request Received from" + this.id);
 
-        UUID uuid = UUID.randomUUID();
-        this.clientsRequests.put(uuid, getSender());
-
-        handleWriteForward(new CSWriteForward(msg, uuid));
+        UUID uuid = this.updateLog.addLocal(msg.index, msg.value, UpdateStatus.UNPROCESSED, getSender());
+        log("Adding new local update coming from client " + getSender().path().name() + " with uuid " + uuid);
+        log("Adding update to queue");
+        this.queue.add(new CSWriteForward(msg, uuid));
+        //processUpdates();
+        processNextUpdate();
     }
 
     public void handleWriteForward(CSWriteForward msg) {
+        log("Adding update to queue");
         this.queue.add(msg);
         getSender().tell(new CSAck(), getSelf());
+        //processUpdates();
+        processNextUpdate();
+    }
 
-        if (!this.processing) {
-            this.processing = true;
+    // =================================================================================
+    // Update Protocol
+    // =================================================================================
 
-//            log("Processing queue");
-            while (!this.queue.isEmpty()) {
+//    public void processUpdates(){
+//        if (!this.processing) {
+//            log("Starting processing the queue");
+//            this.processing = true;
+//
+////            log("Processing queue");
+//            while (!this.queue.isEmpty()) {
+//                CSWriteForward current = this.queue.poll();
+//                update(current);
+//            }
+//
+//            log("Ending processing the queue");
+//            this.processing = false;
+//        }else{
+//            log("Already processing the queue");
+//        }
+//    }
+
+    public void processNextUpdate() {
+        if(!this.processing) {
+            if (!this.queue.isEmpty()) {
+                this.processing = true;
                 CSWriteForward current = this.queue.poll();
-                this.receivedAcks += 1; // coordinator immediately acks to itself
+                log("Starting processing a message");
                 update(current);
+            }else{
+                log("No more messages to process");
             }
-
-            this.processing = false;
+        }else{
+            log("Already processing a message");
         }
     }
 
     public final void update(CSWriteForward msg) {
-        CSUpdateKey tmp = new CSUpdateKey(this.updateKey);
+        CSUpdateKey updateKey = new CSUpdateKey(this.nextUpdateKey);
+
+        this.updateLog.addRemote(updateKey, msg.uuid(), msg.request().index, msg.request().value);
+        this.receivedAcks.put(updateKey, 1); // coordinator immediately acks to itself
 
         Duration timeout = Duration.ofMillis(AbstractReplica.MAX_LATENCY * 2);
-        multicast(new CSUpdate(tmp, new CSUpdateValue(msg.request().index, msg.request().value, false), msg.uuid()), timeout, Optional.empty(),
+        multicast(new CSUpdate(updateKey, new CSUpdateValue(msg.request().index, msg.request().value, false), msg.uuid()), timeout, Optional.empty(),
                 (replica_id, res, e) -> {
                     if (e == null) {
 //                        log("Received ack from: " + replica_id);
-                        this.receivedAcks += 1;
-                        if (receivedAcks == this.replicas.size() / 2 + 1) { // slash with integers always floor
+                        this.receivedAcks.put(updateKey, this.receivedAcks.get(updateKey)+1);
+                        if (this.receivedAcks.get(updateKey) == this.replicas.size() / 2 + 1) { // slash with integers always floor
                             // happens only once because of ==
-                            this.positions[msg.request().index] = msg.request().value;
-                            multicast(new CSWriteOk(tmp), Optional.empty());
-                            this.receivedAcks = 0;
+                            //this.positions[msg.request().index] = msg.request().value;
+                            log("Quorum reached for update " + updateKey + ", sending WriteOk to replicas");
+                            multicast(new CSWriteOk(updateKey), Optional.empty());
 
-                            callbackOnUpdateApplied(msg.request().index, msg.request().value);
+                            completeUpdate(updateKey);
+
+                            this.processing = false;
+                            processNextUpdate();
                         }
                     } else {
                         int crashed_replica_id = replica_id;
@@ -155,33 +196,44 @@ public class Replica extends AbstractReplica {
                     }
                 }
         );
-        this.updateKey = new CSUpdateKey(this.updateKey.epoch(), this.updateKey.seq_no() + 1); //TODO check if final is
+        this.nextUpdateKey = new CSUpdateKey(this.nextUpdateKey.epoch(), this.nextUpdateKey.seq_no() + 1); //TODO check if final is
         // needed
     }
 
     public final void handleUpdate(CSUpdate msg) {
-//        log("Received Update with key:" + msg.key());
-        this.updates.put(msg.key(), msg.update());
-        this.uuidBindings.put(msg.key(), msg.uuid());
+        log("Received Update with key:" + msg.key());
+        this.updateLog.addRemote(msg.key(), msg.uuid(), msg.update().index(), msg.update().value());
         getSender().tell(new CSAck(), getSelf());
     }
 
     public final void handleWriteOk(CSWriteOk msg) {
-//        log("Received WriteOk with key:" + msg.key);
+        log("Received WriteOk with key:" + msg.key);
 
-        CSUpdateValue tmp = this.updates.get(msg.key);
-        positions[tmp.index()] = tmp.value();
-        this.updates.replace(msg.key, new CSUpdateValue(tmp.index(), tmp.value(), true));
+//        try {
+            completeUpdate(msg.key);
+//        }catch(Exception e){
+//            log("Error while handling writeOk: " + e.getMessage());
+//        }
 
-        var uuid = this.uuidBindings.get(msg.key);
-        if (this.clientsRequests.containsKey(uuid)) {
-            this.clientsRequests.get(uuid).tell(new CSAck(), getSelf());
-            this.clientsRequests.remove(uuid);
+    }
+
+    public void completeUpdate(CSUpdateKey key) {
+        //log("Writing to positions");
+        UpdateData update = this.updateLog.get(key);
+        this.positions[update.index] = update.value;
+        callbackOnUpdateApplied(update.index, update.value);
+        this.updateLog.setCompleted(key);
+        sendWriteResult(key);
+    }
+
+    public void sendWriteResult(CSUpdateKey key) {
+        UpdateData update = this.updateLog.get(key);
+        if(update.localRequest) {
+            log("Sending WriteResult to client " + update.client.path().name());
+            update.client.tell(new CSWriteResult(true, update.index, update.value, this.id), getSelf());
+        }else{
+            //log("I'm not the original handler of this update, no need to send result to any client");
         }
-        this.uuidBindings.remove(msg.key);
-
-        // testing
-        callbackOnUpdateApplied(tmp.index(), tmp.value());
     }
 
     // TODO: implement coordinator crash detection

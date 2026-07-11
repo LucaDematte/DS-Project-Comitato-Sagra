@@ -16,7 +16,7 @@ public class Main {
         System.out.println("START");
         System.out.println("========================================\n");
 
-        final int N_REPLICAS = 4;
+        final int N_REPLICAS = 5;
         final int COORDINATOR_ID = 0;
         final ActorSystem system = ActorSystem.create("TestMain");
 
@@ -44,12 +44,33 @@ public class Main {
         );
 
         // TODO: Implement your main logic
-        client1.tell(new AbstractClient.ReadRequest(0), ActorRef.noSender());
-        client1.tell(new AbstractClient.WriteRequest(1, 30), ActorRef.noSender());
+//        client1.tell(new AbstractClient.ReadRequest(0), ActorRef.noSender());
+        client1.tell(new AbstractClient.WriteRequest(0, 10, replicas.get(0)), ActorRef.noSender());
+        client1.tell(new AbstractClient.WriteRequest(0, 20, replicas.get(0)), ActorRef.noSender());
+        client1.tell(new AbstractClient.WriteRequest(0, 30, replicas.get(0)), ActorRef.noSender());
+        client1.tell(new AbstractClient.WriteRequest(0, 40, replicas.get(0)), ActorRef.noSender());
+        client1.tell(new AbstractClient.WriteRequest(0, 50, replicas.get(0)), ActorRef.noSender());
+
+        System.in.read();
+        System.in.read();
+
+        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(0)), ActorRef.noSender());
 
         System.in.read();
 
-        client1.tell(new AbstractClient.ReadRequest(1), ActorRef.noSender());
+        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(1)), ActorRef.noSender());
+
+        System.in.read();
+
+        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(2)), ActorRef.noSender());
+
+        System.in.read();
+
+        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(3)), ActorRef.noSender());
+
+        System.in.read();
+
+        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(4)), ActorRef.noSender());
 
         System.in.read();
         system.terminate();
