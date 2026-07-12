@@ -4,6 +4,7 @@ import akka.actor.ActorRef;
 import akka.actor.Props;
 import akka.pattern.Patterns;
 import it.unitn.ds.cs.*;
+import it.unitn.ds.cs.messages.CSCallbackMessage;
 import it.unitn.ds.cs.messages.client.CSReadRequest;
 import it.unitn.ds.cs.messages.client.CSWriteRequest;
 import it.unitn.ds.cs.messages.coordinator.CSCrashNotice;
@@ -20,6 +21,8 @@ import java.util.*;
 import java.util.concurrent.CompletionStage;
 
 public class Replica extends AbstractReplica {
+    private final ActorCallbacks callbacks = new ActorCallbacks(getSelf());
+    
     // Replica
     Map<Integer, ActorRef> replicas = new HashMap<>(AbstractReplica.POSITIONS_LIST_LENGTH);
     int previous, next;
@@ -118,10 +121,10 @@ public class Replica extends AbstractReplica {
         CompletionStage<Object> future = Patterns.ask(replicas.get(this.coordinatorId),
                 new CSWriteForward(msg, uuid), timeout);
         
-        future.exceptionally(e -> {
-            election();
-            
-            return null;
+        callbacks.attach(future, (res, e) -> {
+            if (e != null) {
+                election();
+            }
         });
     }
     
@@ -150,24 +153,6 @@ public class Replica extends AbstractReplica {
     // Update Protocol
     // =================================================================================
     
-    //    public void processUpdates(){
-    //        if (!this.processing) {
-    //            log("Starting processing the queue");
-    //            this.processing = true;
-    //
-    //
-    //            log("Processing queue");
-    //            while (!this.queue.isEmpty()) {
-    //                CSWriteForward current = this.queue.poll();
-    //                update(current);
-    //            }
-    //
-    //            log("Ending processing the queue");
-    //            this.processing = false;
-    //        }else{
-    //            log("Already processing the queue");
-    //        }
-    //    }
     public void processNextUpdate() {
         if (!this.processing) {
             if (!this.queue.isEmpty()) {
@@ -184,6 +169,7 @@ public class Replica extends AbstractReplica {
     }
     
     public final void update(CSWriteForward msg) {
+        // Deep copy to avoid working on actor state
         CSUpdateKey updateKey = new CSUpdateKey(this.nextUpdateKey);
         
         this.updateLog.addRemote(updateKey, msg.uuid(), msg.request().index, msg.request().value);
@@ -194,14 +180,47 @@ public class Replica extends AbstractReplica {
                         new CSUpdateValue(msg.request().index, msg.request().value, false), msg.uuid()),
                 timeout, Optional.empty(), (replicaId, res, e) -> {
                     if (e == null) {
-                        getSelf().tell(new CSReplicaAck(replicaId, updateKey), getSelf());
+                        log("Received ack from: " + replicaId);
+                        this.receivedAcks.put(updateKey, this.receivedAcks.get(updateKey) + 1);
+                        
+                        // slash with integers always floor, happens only once because of ==
+                        if (this.receivedAcks.get(updateKey) == this.replicas.size() / 2 + 1) {
+                            log("Quorum reached for update " + updateKey + ", sending WriteOk to replicas");
+                            multicast(new CSWriteOk(updateKey), Optional.empty());
+                            
+                            completeUpdate(updateKey);
+                            
+                            this.processing = false;
+                            processNextUpdate();
+                        }
                     } else {
-                        getSelf().tell(new CSReplicaCrash(replicaId), getSelf());
+                        int crashed_replica_id = replicaId;
+                        
+                        // TODO removing replicas from the list causes problems with the quorum calculation
+                        this.replicas.remove(crashed_replica_id);
+                        
+                        int previous_replica_id = this.replicas.keySet()
+                                                               .stream()
+                                                               .filter(id -> id < crashed_replica_id)
+                                                               .max(Integer::compare)
+                                                               .orElse(Collections.min(
+                                                                       this.replicas.keySet()));
+                        int next_replica_id = this.replicas.keySet()
+                                                           .stream()
+                                                           .filter(id -> id > crashed_replica_id)
+                                                           .min(Integer::compare)
+                                                           .orElse(Collections.max(
+                                                                   this.replicas.keySet()));
+                        this.replicas.get(previous_replica_id)
+                                     .tell(new CSCrashNotice(crashed_replica_id,
+                                             previous_replica_id, next_replica_id), getSelf());
+                        this.replicas.get(next_replica_id)
+                                     .tell(new CSCrashNotice(crashed_replica_id,
+                                             previous_replica_id, next_replica_id), getSelf());
                     }
                 });
         this.nextUpdateKey = new CSUpdateKey(this.nextUpdateKey.epoch(),
-                this.nextUpdateKey.seq_no() + 1); //TODO check if final is
-        // needed
+                this.nextUpdateKey.seq_no() + 1); //TODO check if final is needed
     }
     
     public final void handleUpdate(CSUpdate msg) {
@@ -210,50 +229,6 @@ public class Replica extends AbstractReplica {
         getSender().tell(new CSAck(), getSelf());
         
     }
-    
-    public final void handleReplicaAck(CSReplicaAck msg) {
-        log("Received ack from: " + msg.replicaId);
-        this.receivedAcks.put(msg.updateKey, this.receivedAcks.get(msg.updateKey) + 1);
-        if (this.receivedAcks.get(
-                msg.updateKey) == this.replicas.size() / 2 + 1) { // slash with integers always floor
-            // happens only once because of ==
-            //this.positions[msg.request().index] = msg.request().value;
-            log("Quorum reached for update " + msg.updateKey + ", sending WriteOk to replicas");
-            multicast(new CSWriteOk(msg.updateKey), Optional.empty());
-            
-            completeUpdate(msg.updateKey);
-            
-            this.processing = false;
-            processNextUpdate();
-        }
-    }
-    
-    public record CSReplicaAck(int replicaId, CSUpdateKey updateKey) implements Serializable {}
-    
-    public final void handleReplicaCrash(CSReplicaCrash msg) {
-        int crashed_replica_id = msg.replicaId;
-        this.replicas.remove(
-                crashed_replica_id);   // TODO removing replicas from the list causes problems with the quorum calculation
-        
-        int previous_replica_id = this.replicas.keySet()
-                                               .stream()
-                                               .filter(id -> id < crashed_replica_id)
-                                               .max(Integer::compare)
-                                               .orElse(Collections.min(this.replicas.keySet()));
-        int next_replica_id = this.replicas.keySet()
-                                           .stream()
-                                           .filter(id -> id > crashed_replica_id)
-                                           .min(Integer::compare)
-                                           .orElse(Collections.max(this.replicas.keySet()));
-        this.replicas.get(previous_replica_id)
-                     .tell(new CSCrashNotice(crashed_replica_id, previous_replica_id,
-                             next_replica_id), getSelf());
-        this.replicas.get(next_replica_id)
-                     .tell(new CSCrashNotice(crashed_replica_id, previous_replica_id,
-                             next_replica_id), getSelf());
-    }
-    
-    public record CSReplicaCrash(int replicaId) implements Serializable {}
     
     public final void handleWriteOk(CSWriteOk msg) {
         log("Received WriteOk with key:" + msg.key);
@@ -320,10 +295,11 @@ public class Replica extends AbstractReplica {
                 // crash
             }
             CompletionStage<Object> future = Patterns.ask(replica.getValue(), msg, timeout);
-            future.handle((res, e) -> {
+            
+            callbacks.attach(future, (res, e) -> {
                 handler.handle(replica.getKey(), res, e);
-                return null;
             });
+            
             i++;
         }
     }
@@ -356,6 +332,8 @@ public class Replica extends AbstractReplica {
                                          .match(CSCrashNotice.class, this::handleCrashNotice)
                                          .match(CSUpdate.class, this::handleUpdate)
                                          .match(CSWriteOk.class, this::handleWriteOk)
+                                         // handler for callbacks sent to itself
+                                         .match(CSCallbackMessage.class, callbacks::handle)
                                          .build();
     }
     
@@ -363,9 +341,8 @@ public class Replica extends AbstractReplica {
         return receiveBuilder().match(CSReadRequest.class, this::handleReadRequest)
                                .match(CSWriteRequest.class, this::handleWriteRequestCoordinator)
                                .match(CSWriteForward.class, this::handleWriteForward)
-                               // Internal messages sent by coordinator to itself
-                               .match(CSReplicaAck.class, this::handleReplicaAck)
-                               .match(CSReplicaCrash.class, this::handleReplicaCrash)
+                               // handler for callbacks sent to itself
+                               .match(CSCallbackMessage.class, callbacks::handle)
                                //                             .match(CSUpdate.class, this::handleUpdate)
                                //                             .match(CSWriteOk.class, this::handleWriteOk)
                                .build();
