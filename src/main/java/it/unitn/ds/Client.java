@@ -2,21 +2,20 @@ package it.unitn.ds;
 
 import akka.actor.ActorRef;
 import akka.actor.Props;
-import akka.pattern.AskTimeoutException;
-import akka.pattern.Patterns;
-import it.unitn.ds.cs.ActorCallbacks;
-import it.unitn.ds.cs.messages.CSCallbackMessage;
+import it.unitn.ds.cs.AskResponseSystem;
+import it.unitn.ds.cs.messages.AskResponse;
+import it.unitn.ds.cs.messages.AskTimeout;
 import it.unitn.ds.cs.messages.client.CSReadRequest;
 import it.unitn.ds.cs.messages.client.CSWriteRequest;
 import it.unitn.ds.cs.messages.replica.CSReadResult;
 import it.unitn.ds.cs.messages.replica.CSWriteResult;
 
+import java.io.Serializable;
 import java.time.Duration;
 import java.util.Optional;
-import java.util.concurrent.CompletionStage;
 
 public class Client extends AbstractClient {
-    private final ActorCallbacks callbacks = new ActorCallbacks(getSelf());
+    private final AskResponseSystem askSupport = new AskResponseSystem(getContext(), this::tell);
     
     Client(
             long readTimeoutDelay, long writeTimeoutDelay, Optional<ActorRef> defaultTargetReplica,
@@ -44,29 +43,29 @@ public class Client extends AbstractClient {
                         Optional.ofNullable(listener)));
     }
     
+    /**
+     * Wrapper for tell with the same signature from AbstractReplica.tell
+     * Needed to enable the client to use the custom ask system.
+     */
+    void tell(Serializable m, ActorRef dst) {
+        dst.tell(m, getSelf());
+    }
+    
     @Override
     public void sendRead(ActorRef replica, int index) {
         Duration timeout = Duration.ofMillis(getReadTimeoutDelay());
         
-        CompletionStage<Object> future = Patterns.ask(replica, new CSReadRequest(index), timeout);
-        
-        callbacks.attach(future, (res, e) -> {
-            if (e == null) {
-                CSReadResult readResult = (CSReadResult) res;
-                // call when the result is received
-                callbackOnReadResult(
-                        new ReadResult(readResult.success, readResult.index, readResult.value,
-                                readResult.replicaId));
-            } else {
-                if (e instanceof AskTimeoutException) {
-                    // call when the timeout expires
-                    callbackOnReadTimeout(new ReadTimeout(getSelf(), replica, index));
-                } else {
-                    log("Unknown exception of type " + e.getClass()
-                                                        .getName() + " on sendRead future: " + e.getMessage());
-                }
-            }
-        });
+        askSupport.<CSReadResult>ask(new CSReadRequest(index), replica, timeout,
+                (res, timedOut) -> {
+                    if (!timedOut) {
+                        // call when the result is received
+                        callbackOnReadResult(
+                                new ReadResult(res.success, res.index, res.value, res.replicaId));
+                    } else {
+                        // call when the timeout expires
+                        callbackOnReadTimeout(new ReadTimeout(getSelf(), replica, index));
+                    }
+                });
     }
     
     @Override
@@ -75,35 +74,29 @@ public class Client extends AbstractClient {
                                                  .name() + ": set P[" + index + "] to " + value);
         
         Duration timeout = Duration.ofMillis(getWriteTimeoutDelay());
-        CompletionStage<Object> future = Patterns.ask(replica, new CSWriteRequest(index, value),
-                timeout);
         
-        callbacks.attach(future, (res, e) -> {
-            if (e == null) {
-                CSWriteResult writeResult = (CSWriteResult) res;
-                // call when the result is received
-                log("Received write result: P[" + writeResult.index + "] = " + writeResult.value + " (success = " + writeResult.success + ")");
-                callbackOnWriteResult(
-                        new WriteResult(writeResult.success, writeResult.index, writeResult.value,
-                                writeResult.replicaId));
-            } else {
-                if (e instanceof AskTimeoutException) {
-                    // call when the timeout expires
-                    log("Write timeout expired");
-                    callbackOnWriteTimeout(new WriteTimeout(getSelf(), replica, index, value));
-                } else {
-                    log("Unknown exception of type " + e.getClass()
-                                                        .getName() + " on sendWrite future: " + e.getMessage());
-                }
-            }
-        });
+        askSupport.<CSWriteResult>ask(new CSWriteRequest(index, value), replica, timeout,
+                (res, timedOut) -> {
+                    if (!timedOut) {
+                        // call when the result is received
+                        log("Received write result: P[" + res.index + "] = " + res.value + " (success = " + res.success + ")");
+                        callbackOnWriteResult(
+                                new WriteResult(res.success, res.index, res.value, res.replicaId));
+                    } else {
+                        // call when the timeout expires
+                        log("Write timeout expired");
+                        callbackOnWriteTimeout(new WriteTimeout(getSelf(), replica, index, value));
+                    }
+                });
     }
     
     @Override
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
-                // handler for callbacks sent to itself
-                .match(CSCallbackMessage.class, callbacks::handle).build();
+                // handlers for messages in the ask-response system
+                .match(AskResponse.class, askSupport::handleResponse)
+                .match(AskTimeout.class, askSupport::handleTimeout)
+                .build();
     }
     
 }

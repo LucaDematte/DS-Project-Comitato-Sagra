@@ -2,9 +2,10 @@ package it.unitn.ds;
 
 import akka.actor.ActorRef;
 import akka.actor.Props;
-import akka.pattern.Patterns;
 import it.unitn.ds.cs.*;
-import it.unitn.ds.cs.messages.CSCallbackMessage;
+import it.unitn.ds.cs.messages.AskRequest;
+import it.unitn.ds.cs.messages.AskResponse;
+import it.unitn.ds.cs.messages.AskTimeout;
 import it.unitn.ds.cs.messages.client.CSReadRequest;
 import it.unitn.ds.cs.messages.client.CSWriteRequest;
 import it.unitn.ds.cs.messages.coordinator.CSCrashNotice;
@@ -18,10 +19,9 @@ import it.unitn.ds.cs.messages.replica.CSWriteResult;
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.CompletionStage;
 
 public class Replica extends AbstractReplica {
-    private final ActorCallbacks callbacks = new ActorCallbacks(getSelf());
+    private final AskResponseSystem askSupport = new AskResponseSystem(getContext(), this::tell);
     
     // Replica
     Map<Integer, ActorRef> replicas = new HashMap<>(AbstractReplica.POSITIONS_LIST_LENGTH);
@@ -94,59 +94,68 @@ public class Replica extends AbstractReplica {
         }
     }
     
-    // =================================================================================
-    // Read Requests
-    // =================================================================================
-    
-    public void handleReadRequest(CSReadRequest msg) {
-        try {
-            int result = this.positions[msg.index];
-            getSender().tell(new CSReadResult(true, msg.index, result, this.id), getSelf());
-        } catch (IndexOutOfBoundsException e) {
-            getSender().tell(new CSReadResult(false, msg.index, 0, this.id), getSelf());
-        }
-    }
-    
-    // =================================================================================
-    // Write Requests
-    // =================================================================================
-    
-    public void handleWriteRequest(CSWriteRequest msg) {
-        UUID uuid = this.updateLog.addLocal(msg.index, msg.value, UpdateStatus.UNPROCESSED,
-                getSender());
-        log("Adding new local update coming from client " + getSender().path()
-                                                                       .name() + " with uuid " + uuid);
+    // Handler for all requests (coming from an ask) that need to be answered with a response
+    private void onAskRequest(AskRequest request) {
+        Serializable payload = request.getPayload();
         
-        Duration timeout = Duration.ofMillis(AbstractReplica.MAX_LATENCY * 2);
-        CompletionStage<Object> future = Patterns.ask(replicas.get(this.coordinatorId),
-                new CSWriteForward(msg, uuid), timeout);
-        
-        callbacks.attach(future, (res, e) -> {
-            if (e != null) {
-                election();
+        if (payload instanceof CSReadRequest) {
+            // handleReadRequest
+            CSReadRequest msg = (CSReadRequest) payload;
+            
+            try {
+                int result = this.positions[msg.index];
+                tell(AskResponseSystem.reply(request,
+                        new CSReadResult(true, msg.index, result, this.id)), getSender());
+            } catch (IndexOutOfBoundsException e) {
+                tell(AskResponseSystem.reply(request,
+                        new CSReadResult(false, msg.index, 0, this.id)), getSender());
             }
-        });
-    }
-    
-    public void handleWriteRequestCoordinator(CSWriteRequest msg) {
-        //        log("Write Request Received from" + this.id);
-        
-        UUID uuid = this.updateLog.addLocal(msg.index, msg.value, UpdateStatus.UNPROCESSED,
-                getSender());
-        log("Adding new local update coming from client " + getSender().path()
-                                                                       .name() + " with uuid " + uuid);
-        log("Adding update to queue");
-        this.queue.add(new CSWriteForward(msg, uuid));
-        //processUpdates();
-        processNextUpdate();
-    }
-    
-    public void handleWriteForward(CSWriteForward msg) {
-        log("Adding update to queue");
-        this.queue.add(msg);
-        getSender().tell(new CSAck(), getSelf());
-        //processUpdates();
-        processNextUpdate();
+        } else if (payload instanceof CSWriteRequest) {
+            // handleWriteRequest
+            CSWriteRequest msg = (CSWriteRequest) payload;
+            
+            if (this.id == this.coordinatorId) {
+                //        log("Write Request Received from" + this.id);
+                
+                UUID uuid = this.updateLog.addLocal(request.getCorrelationId(), msg.index,
+                        msg.value, UpdateStatus.UNPROCESSED, getSender());
+                log("Adding new local update coming from client " + getSender().path()
+                                                                               .name() + " with uuid " + uuid);
+                log("Adding update to queue");
+                this.queue.add(new CSWriteForward(msg, uuid));
+                processNextUpdate();
+            } else {
+                UUID uuid = this.updateLog.addLocal(request.getCorrelationId(), msg.index,
+                        msg.value, UpdateStatus.UNPROCESSED, getSender());
+                log("Adding new local update coming from client " + getSender().path()
+                                                                               .name() + " with uuid " + uuid);
+                
+                Duration timeout = Duration.ofMillis(AbstractReplica.MAX_LATENCY * 2);
+                
+                askSupport.<CSAck>ask(new CSWriteForward(msg, uuid),
+                        replicas.get(this.coordinatorId), timeout, (res, timedOut) -> {
+                            if (timedOut) {
+                                election();
+                            }
+                        });
+            }
+        } else if (payload instanceof CSWriteForward) {
+            // handleWriteForward
+            CSWriteForward msg = (CSWriteForward) payload;
+            
+            log("Adding update to queue");
+            this.queue.add(msg);
+            tell(AskResponseSystem.reply(request, new CSAck()), getSender());
+            processNextUpdate();
+        } else if (payload instanceof CSUpdate) {
+            // handleUpdate
+            CSUpdate msg = (CSUpdate) payload;
+            
+            log("Received Update with key:" + msg.key());
+            this.updateLog.addRemote(msg.key(), msg.uuid(), msg.update().index(),
+                    msg.update().value());
+            tell(AskResponseSystem.reply(request, new CSAck()), getSender());
+        }
     }
     
     // =================================================================================
@@ -175,11 +184,12 @@ public class Replica extends AbstractReplica {
         this.updateLog.addRemote(updateKey, msg.uuid(), msg.request().index, msg.request().value);
         this.receivedAcks.put(updateKey, 1); // coordinator immediately acks to itself
         
-        Duration timeout = Duration.ofMillis(AbstractReplica.MAX_LATENCY * 2);
+        // TODO Now that we use the right tell() (with network delays) we must choose timeouts wisely
+        Duration timeout = Duration.ofMillis(1000);
         multicast(new CSUpdate(updateKey,
                         new CSUpdateValue(msg.request().index, msg.request().value, false), msg.uuid()),
-                timeout, Optional.empty(), (replicaId, res, e) -> {
-                    if (e == null) {
+                timeout, Optional.empty(), (replicaId, res, timedOut) -> {
+                    if (!timedOut) {
                         log("Received ack from: " + replicaId);
                         this.receivedAcks.put(updateKey, this.receivedAcks.get(updateKey) + 1);
                         
@@ -196,7 +206,10 @@ public class Replica extends AbstractReplica {
                     } else {
                         int crashed_replica_id = replicaId;
                         
+                        log("Replica with ID " + crashed_replica_id + " crashed! Sending notices to replicas");
+                        
                         // TODO removing replicas from the list causes problems with the quorum calculation
+                        // Also, it is not possible since it is an unmodifiable map
                         this.replicas.remove(crashed_replica_id);
                         
                         int previous_replica_id = this.replicas.keySet()
@@ -223,13 +236,6 @@ public class Replica extends AbstractReplica {
                 this.nextUpdateKey.seq_no() + 1); //TODO check if final is needed
     }
     
-    public final void handleUpdate(CSUpdate msg) {
-        log("Received Update with key:" + msg.key());
-        this.updateLog.addRemote(msg.key(), msg.uuid(), msg.update().index(), msg.update().value());
-        getSender().tell(new CSAck(), getSelf());
-        
-    }
-    
     public final void handleWriteOk(CSWriteOk msg) {
         log("Received WriteOk with key:" + msg.key);
         
@@ -252,10 +258,11 @@ public class Replica extends AbstractReplica {
     
     public void sendWriteResult(CSUpdateKey key) {
         UpdateData update = this.updateLog.get(key);
+        UUID updateUUID = this.updateLog.getUUIDBinding(key);
         if (update.localRequest) {
             log("Sending WriteResult to client " + update.client.path().name());
-            update.client.tell(new CSWriteResult(true, update.index, update.value, this.id),
-                    getSelf());
+            tell(AskResponseSystem.reply(new AskRequest(updateUUID, null),
+                    new CSWriteResult(true, update.index, update.value, this.id)), update.client);
         } else {
             //log("I'm not the original handler of this update, no need to send result to any client");
         }
@@ -279,7 +286,7 @@ public class Replica extends AbstractReplica {
     
     @FunctionalInterface
     interface ReplicaHandler {
-        void handle(Integer replica_id, Object result, Throwable error);
+        void handle(Integer replica_id, Object result, boolean timedOut);
     }
     
     public final void multicast(
@@ -294,10 +301,9 @@ public class Replica extends AbstractReplica {
             if (crash_message_n.isPresent() && i == crash_message_n.get()) {
                 // crash
             }
-            CompletionStage<Object> future = Patterns.ask(replica.getValue(), msg, timeout);
             
-            callbacks.attach(future, (res, e) -> {
-                handler.handle(replica.getKey(), res, e);
+            askSupport.ask(msg, replica.getValue(), timeout, (res, timedOut) -> {
+                handler.handle(replica.getKey(), res, timedOut);
             });
             
             i++;
@@ -313,7 +319,7 @@ public class Replica extends AbstractReplica {
             if (crash_message_n.isPresent() && i == crash_message_n.get()) {
                 // crash
             }
-            replica.getValue().tell(msg, getSelf());
+            tell(msg, replica.getValue());
         }
     }
     
@@ -327,25 +333,24 @@ public class Replica extends AbstractReplica {
     
     @Override
     public final Receive createReceive() {
-        return createBaseReceiveBuilder().match(CSReadRequest.class, this::handleReadRequest)
-                                         .match(CSWriteRequest.class, this::handleWriteRequest)
-                                         .match(CSCrashNotice.class, this::handleCrashNotice)
-                                         .match(CSUpdate.class, this::handleUpdate)
+        return createBaseReceiveBuilder().match(CSCrashNotice.class, this::handleCrashNotice)
                                          .match(CSWriteOk.class, this::handleWriteOk)
-                                         // handler for callbacks sent to itself
-                                         .match(CSCallbackMessage.class, callbacks::handle)
+                                         // handlers for messages in the ask-response system
+                                         .match(AskResponse.class, askSupport::handleResponse)
+                                         .match(AskRequest.class, this::onAskRequest)
+                                         .match(AskTimeout.class, askSupport::handleTimeout)
                                          .build();
     }
     
     public final Receive coordinator() {
-        return receiveBuilder().match(CSReadRequest.class, this::handleReadRequest)
-                               .match(CSWriteRequest.class, this::handleWriteRequestCoordinator)
-                               .match(CSWriteForward.class, this::handleWriteForward)
-                               // handler for callbacks sent to itself
-                               .match(CSCallbackMessage.class, callbacks::handle)
-                               //                             .match(CSUpdate.class, this::handleUpdate)
-                               //                             .match(CSWriteOk.class, this::handleWriteOk)
-                               .build();
+        return receiveBuilder()
+                // handlers for messages in the ask-response system
+                .match(AskResponse.class, askSupport::handleResponse)
+                .match(AskRequest.class, this::onAskRequest)
+                .match(AskTimeout.class, askSupport::handleTimeout)
+//              .match(CSUpdate.class, this::handleUpdate)
+//              .match(CSWriteOk.class, this::handleWriteOk)
+                .build();
     }
     
 }

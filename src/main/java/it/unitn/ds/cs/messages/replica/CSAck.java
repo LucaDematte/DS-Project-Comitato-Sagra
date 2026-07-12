@@ -1,5 +1,7 @@
 package it.unitn.ds.cs.messages.replica;
 
-public class CSAck {
+import java.io.Serializable;
+
+public class CSAck implements Serializable {
     int seqn;
 }
