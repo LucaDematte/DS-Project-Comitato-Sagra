@@ -4,7 +4,15 @@ import akka.actor.ActorRef;
 import akka.actor.Props;
 import akka.pattern.Patterns;
 import it.unitn.ds.cs.*;
-import it.unitn.ds.cs.messages.*;
+import it.unitn.ds.cs.messages.client.CSReadRequest;
+import it.unitn.ds.cs.messages.client.CSWriteRequest;
+import it.unitn.ds.cs.messages.coordinator.CSCrashNotice;
+import it.unitn.ds.cs.messages.coordinator.CSUpdate;
+import it.unitn.ds.cs.messages.coordinator.CSWriteOk;
+import it.unitn.ds.cs.messages.replica.CSAck;
+import it.unitn.ds.cs.messages.replica.CSReadResult;
+import it.unitn.ds.cs.messages.replica.CSWriteForward;
+import it.unitn.ds.cs.messages.replica.CSWriteResult;
 
 import java.io.Serializable;
 import java.time.Duration;
@@ -26,7 +34,8 @@ public class Replica extends AbstractReplica {
     boolean processing;
     
     public Replica(int id) {
-        this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
+        this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY,
+                AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
     }
     
     public Replica(
@@ -41,7 +50,9 @@ public class Replica extends AbstractReplica {
     }
     
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
-        return Props.create(Replica.class, () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.empty()));
+        return Props.create(Replica.class,
+                () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval,
+                        Optional.empty()));
     }
     
     // Props method for automated tests
@@ -49,7 +60,9 @@ public class Replica extends AbstractReplica {
             int id, int minLatency, int maxLatency, int coordinatorBeatInterval,
             ActorRef listener
     ) {
-        return Props.create(Replica.class, () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.ofNullable(listener)));
+        return Props.create(Replica.class,
+                () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval,
+                        Optional.ofNullable(listener)));
     }
     
     @Override
@@ -96,12 +109,14 @@ public class Replica extends AbstractReplica {
     // =================================================================================
     
     public void handleWriteRequest(CSWriteRequest msg) {
-        UUID uuid = this.updateLog.addLocal(msg.index, msg.value, UpdateStatus.UNPROCESSED, getSender());
+        UUID uuid = this.updateLog.addLocal(msg.index, msg.value, UpdateStatus.UNPROCESSED,
+                getSender());
         log("Adding new local update coming from client " + getSender().path()
                                                                        .name() + " with uuid " + uuid);
         
         Duration timeout = Duration.ofMillis(AbstractReplica.MAX_LATENCY * 2);
-        CompletionStage<Object> future = Patterns.ask(replicas.get(this.coordinatorId), new CSWriteForward(msg, uuid), timeout);
+        CompletionStage<Object> future = Patterns.ask(replicas.get(this.coordinatorId),
+                new CSWriteForward(msg, uuid), timeout);
         
         future.exceptionally(e -> {
             election();
@@ -113,7 +128,8 @@ public class Replica extends AbstractReplica {
     public void handleWriteRequestCoordinator(CSWriteRequest msg) {
         //        log("Write Request Received from" + this.id);
         
-        UUID uuid = this.updateLog.addLocal(msg.index, msg.value, UpdateStatus.UNPROCESSED, getSender());
+        UUID uuid = this.updateLog.addLocal(msg.index, msg.value, UpdateStatus.UNPROCESSED,
+                getSender());
         log("Adding new local update coming from client " + getSender().path()
                                                                        .name() + " with uuid " + uuid);
         log("Adding update to queue");
@@ -174,14 +190,17 @@ public class Replica extends AbstractReplica {
         this.receivedAcks.put(updateKey, 1); // coordinator immediately acks to itself
         
         Duration timeout = Duration.ofMillis(AbstractReplica.MAX_LATENCY * 2);
-        multicast(new CSUpdate(updateKey, new CSUpdateValue(msg.request().index, msg.request().value, false), msg.uuid()), timeout, Optional.empty(), (replicaId, res, e) -> {
-            if (e == null) {
-                getSelf().tell(new CSReplicaAck(replicaId, updateKey), getSelf());
-            } else {
-                getSelf().tell(new CSReplicaCrash(replicaId), getSelf());
-            }
-        });
-        this.nextUpdateKey = new CSUpdateKey(this.nextUpdateKey.epoch(), this.nextUpdateKey.seq_no() + 1); //TODO check if final is
+        multicast(new CSUpdate(updateKey,
+                        new CSUpdateValue(msg.request().index, msg.request().value, false), msg.uuid()),
+                timeout, Optional.empty(), (replicaId, res, e) -> {
+                    if (e == null) {
+                        getSelf().tell(new CSReplicaAck(replicaId, updateKey), getSelf());
+                    } else {
+                        getSelf().tell(new CSReplicaCrash(replicaId), getSelf());
+                    }
+                });
+        this.nextUpdateKey = new CSUpdateKey(this.nextUpdateKey.epoch(),
+                this.nextUpdateKey.seq_no() + 1); //TODO check if final is
         // needed
     }
     
@@ -195,7 +214,8 @@ public class Replica extends AbstractReplica {
     public final void handleReplicaAck(CSReplicaAck msg) {
         log("Received ack from: " + msg.replicaId);
         this.receivedAcks.put(msg.updateKey, this.receivedAcks.get(msg.updateKey) + 1);
-        if (this.receivedAcks.get(msg.updateKey) == this.replicas.size() / 2 + 1) { // slash with integers always floor
+        if (this.receivedAcks.get(
+                msg.updateKey) == this.replicas.size() / 2 + 1) { // slash with integers always floor
             // happens only once because of ==
             //this.positions[msg.request().index] = msg.request().value;
             log("Quorum reached for update " + msg.updateKey + ", sending WriteOk to replicas");
@@ -212,7 +232,8 @@ public class Replica extends AbstractReplica {
     
     public final void handleReplicaCrash(CSReplicaCrash msg) {
         int crashed_replica_id = msg.replicaId;
-        this.replicas.remove(crashed_replica_id);   // TODO removing replicas from the list causes problems with the quorum calculation
+        this.replicas.remove(
+                crashed_replica_id);   // TODO removing replicas from the list causes problems with the quorum calculation
         
         int previous_replica_id = this.replicas.keySet()
                                                .stream()
@@ -225,9 +246,11 @@ public class Replica extends AbstractReplica {
                                            .min(Integer::compare)
                                            .orElse(Collections.max(this.replicas.keySet()));
         this.replicas.get(previous_replica_id)
-                     .tell(new CSCrashNotice(crashed_replica_id, previous_replica_id, next_replica_id), getSelf());
+                     .tell(new CSCrashNotice(crashed_replica_id, previous_replica_id,
+                             next_replica_id), getSelf());
         this.replicas.get(next_replica_id)
-                     .tell(new CSCrashNotice(crashed_replica_id, previous_replica_id, next_replica_id), getSelf());
+                     .tell(new CSCrashNotice(crashed_replica_id, previous_replica_id,
+                             next_replica_id), getSelf());
     }
     
     public record CSReplicaCrash(int replicaId) implements Serializable {}
@@ -256,7 +279,8 @@ public class Replica extends AbstractReplica {
         UpdateData update = this.updateLog.get(key);
         if (update.localRequest) {
             log("Sending WriteResult to client " + update.client.path().name());
-            update.client.tell(new CSWriteResult(true, update.index, update.value, this.id), getSelf());
+            update.client.tell(new CSWriteResult(true, update.index, update.value, this.id),
+                    getSelf());
         } else {
             //log("I'm not the original handler of this update, no need to send result to any client");
         }
