@@ -158,6 +158,49 @@ public class Replica extends AbstractReplica {
         }
     }
     
+    public void handleReadRequest(CSWriteRequest msg) {
+        try {
+            int result = this.positions[msg.index];
+            tell(AskResponseSystem.reply(request,
+                    new CSReadResult(true, msg.index, result, this.id)), getSender());
+        } catch (IndexOutOfBoundsException e) {
+            tell(AskResponseSystem.reply(request, new CSReadResult(false, msg.index, 0, this.id)),
+                    getSender());
+        }
+    }
+    
+    public void handleWriteRequest(CSWriteRequest msg) {
+        UUID uuid = this.updateLog.addLocal(request.getCorrelationId(), msg.index, msg.value,
+                UpdateStatus.UNPROCESSED, getSender());
+        log("Adding new local update coming from client " + getSender().path()
+                                                                       .name() + " with uuid " + uuid);
+        
+        Duration timeout = Duration.ofMillis(AbstractReplica.MAX_LATENCY * 2);
+        
+        askSupport.<CSAck>ask(new CSWriteForward(msg, uuid), replicas.get(this.coordinatorId),
+                timeout, (res, timedOut) -> {
+                    if (timedOut) {
+                        election();
+                    }
+                });
+    }
+    
+    public void handleWriteRequestCoordinator(CSWriteRequest msg) {
+        //        log("Write Request Received from" + this.id);
+        
+        UUID uuid = this.updateLog.addLocal(request.getCorrelationId(), msg.index, msg.value,
+                UpdateStatus.UNPROCESSED, getSender());
+        log("Adding new local update coming from client " + getSender().path()
+                                                                       .name() + " with uuid " + uuid);
+        log("Adding update to queue");
+        this.queue.add(new CSWriteForward(msg, uuid));
+        processNextUpdate();
+    }
+    
+    public void handleWriteForward(CSWriteForward msg) {
+    
+    }
+    
     // =================================================================================
     // Update Protocol
     // =================================================================================

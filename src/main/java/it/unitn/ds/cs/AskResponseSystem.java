@@ -69,7 +69,7 @@ public class AskResponseSystem {
                                          .scheduleOnce(delay, context.self(), new AskTimeout(id),
                                                  context.dispatcher(), ActorRef.noSender());
         
-        @SuppressWarnings("unchecked") AskCallback<Serializable> erased = (AskCallback<Serializable>) callback;
+        AskCallback<Serializable> erased = (AskCallback<Serializable>) callback;
         pending.put(id, new PendingAsk(erased, timeoutTask));
         
         sender.accept(new AskRequest(id, payload), destination);
