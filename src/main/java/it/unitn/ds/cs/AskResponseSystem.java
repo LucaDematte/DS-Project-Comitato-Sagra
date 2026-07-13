@@ -3,7 +3,6 @@ package it.unitn.ds.cs;
 import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
-import it.unitn.ds.cs.messages.AskRequest;
 import it.unitn.ds.cs.messages.AskResponse;
 import it.unitn.ds.cs.messages.AskTimeout;
 import scala.concurrent.duration.FiniteDuration;
@@ -58,21 +57,23 @@ public class AskResponseSystem {
      * anche se non arriva nessuna risposta entro il timeout.
      */
     public <T extends Serializable> void ask(
-            Serializable payload, ActorRef destination,
+            CSAsk payload, ActorRef destination,
             java.time.Duration timeout, AskCallback<T> callback
     ) {
-        UUID id = UUID.randomUUID();
+        //UUID id = UUID.randomUUID();
         
         FiniteDuration delay = FiniteDuration.create(timeout.toMillis(), TimeUnit.MILLISECONDS);
         Cancellable timeoutTask = context.system()
                                          .scheduler()
-                                         .scheduleOnce(delay, context.self(), new AskTimeout(id),
-                                                 context.dispatcher(), ActorRef.noSender());
+                                         .scheduleOnce(delay, context.self(),
+                                                 new AskTimeout(payload.uuid), context.dispatcher(),
+                                                 ActorRef.noSender());
         
         AskCallback<Serializable> erased = (AskCallback<Serializable>) callback;
-        pending.put(id, new PendingAsk(erased, timeoutTask));
+        pending.put(payload.uuid, new PendingAsk(erased, timeoutTask));
         
-        sender.accept(new AskRequest(id, payload), destination);
+        //sender.accept(new AskRequest(id, payload), destination);
+        sender.accept(payload, destination);
     }
     
     /**
@@ -109,8 +110,8 @@ public class AskResponseSystem {
      * <p>
      * tell(AskResponseSystem.reply(request, myPayload), getSender());
      */
-    public static AskResponse reply(AskRequest request, Serializable responsePayload) {
-        return new AskResponse(request.getCorrelationId(), responsePayload);
+    public static AskResponse reply(UUID uuid, Serializable responsePayload) {
+        return new AskResponse(uuid, responsePayload);
     }
     
     /**

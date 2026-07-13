@@ -1,11 +1,15 @@
 package it.unitn.ds.cs.messages.client;
 
-import java.io.Serializable;
+import it.unitn.ds.cs.CSAsk;
 
-public class CSReadRequest implements Serializable {
+import java.io.Serializable;
+import java.util.UUID;
+
+public class CSReadRequest extends CSAsk implements Serializable {
     public final int index;
     
-    public CSReadRequest(int index) {
+    public CSReadRequest(UUID uuid, int index) {
+        super(uuid);
         this.index = index;
     }
 }
