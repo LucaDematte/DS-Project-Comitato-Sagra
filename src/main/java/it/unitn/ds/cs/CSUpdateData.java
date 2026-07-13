@@ -1,19 +1,13 @@
 package it.unitn.ds.cs;
 
-public class UpdateData {
+public class CSUpdateData {
     public final int index;
     public final int value;
-    public boolean completed;
+    public final boolean completed;
     
-    public UpdateData(int index, int value, boolean completed) {
+    public CSUpdateData(int index, int value, boolean completed) {
         this.index = index;
         this.value = value;
         this.completed = completed;
-    }
-    
-    public UpdateData(int index, int value) {
-        this.index = index;
-        this.value = value;
-        this.completed = false;
     }
 }

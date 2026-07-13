@@ -1,15 +1,13 @@
 package it.unitn.ds.cs.messages.coordinator;
 
-import it.unitn.ds.cs.CSAsk;
 import it.unitn.ds.cs.CSUpdateKey;
 
-import java.util.UUID;
+import java.io.Serializable;
 
-public class CSWriteOk extends CSAsk {
+public class CSWriteOk implements Serializable {
     public final CSUpdateKey key;
     
-    public CSWriteOk(CSUpdateKey key, UUID uuid) {
-        super(uuid);
+    public CSWriteOk(CSUpdateKey key) {
         this.key = key;
     }
 }

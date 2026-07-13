@@ -1,19 +1,21 @@
 package it.unitn.ds.cs.messages.coordinator;
 
-import it.unitn.ds.cs.CSAsk;
+import it.unitn.ds.cs.CSUpdateData;
 import it.unitn.ds.cs.CSUpdateKey;
-import it.unitn.ds.cs.CSUpdateValue;
+import it.unitn.ds.cs.messages.CSAskMessage;
 
 import java.io.Serializable;
 import java.util.UUID;
 
-public class CSUpdate extends CSAsk implements Serializable {
+public class CSUpdate extends CSAskMessage implements Serializable {
     public final CSUpdateKey key;
-    public final CSUpdateValue update;
+    public final CSUpdateData data;
+    public final UUID writeRequestUUID;
     
-    public CSUpdate(UUID uuid, CSUpdateKey key, CSUpdateValue update) {
+    public CSUpdate(CSUpdateKey key, CSUpdateData data, UUID writeRequestUUID, UUID uuid) {
         super(uuid);
         this.key = key;
-        this.update = update;
+        this.data = data;
+        this.writeRequestUUID = writeRequestUUID;
     }
 }

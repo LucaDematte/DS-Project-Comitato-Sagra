@@ -2,9 +2,8 @@ package it.unitn.ds;
 
 import akka.actor.ActorRef;
 import akka.actor.Props;
-import it.unitn.ds.cs.AskResponseSystem;
-import it.unitn.ds.cs.messages.AskResponse;
-import it.unitn.ds.cs.messages.AskTimeout;
+import it.unitn.ds.cs.CSAsk;
+import it.unitn.ds.cs.messages.CSAskTimeout;
 import it.unitn.ds.cs.messages.client.CSReadRequest;
 import it.unitn.ds.cs.messages.client.CSWriteRequest;
 import it.unitn.ds.cs.messages.replica.CSReadResult;
@@ -15,8 +14,6 @@ import java.time.Duration;
 import java.util.Optional;
 
 public class Client extends AbstractClient {
-    private final AskResponseSystem askSupport = new AskResponseSystem(getContext(), this::tell);
-    
     Client(
             long readTimeoutDelay, long writeTimeoutDelay, Optional<ActorRef> defaultTargetReplica,
             Optional<ActorRef> listener
@@ -53,10 +50,10 @@ public class Client extends AbstractClient {
     
     @Override
     public void sendRead(ActorRef replica, int index) {
-        Duration timeout = Duration.ofMillis(getReadTimeoutDelay());
+        Duration timeout = Duration.ofMillis(super.getReadTimeoutDelay());
         
-        askSupport.<CSReadResult>ask(new CSReadRequest(index), replica, timeout,
-                (res, timedOut) -> {
+        CSAsk.<CSReadResult>ask(getContext(), this::tell, new CSReadRequest(index), replica,
+                timeout, (res, timedOut) -> {
                     if (!timedOut) {
                         // call when the result is received
                         callbackOnReadResult(
@@ -75,8 +72,8 @@ public class Client extends AbstractClient {
         
         Duration timeout = Duration.ofMillis(getWriteTimeoutDelay());
         
-        askSupport.<CSWriteResult>ask(new CSWriteRequest(index, value), replica, timeout,
-                (res, timedOut) -> {
+        CSAsk.<CSWriteResult>ask(getContext(), this::tell, new CSWriteRequest(index, value),
+                replica, timeout, (res, timedOut) -> {
                     if (!timedOut) {
                         // call when the result is received
                         log("Received write result: P[" + res.index + "] = " + res.value + " (success = " + res.success + ")");
@@ -92,11 +89,8 @@ public class Client extends AbstractClient {
     
     @Override
     public final Receive createReceive() {
-        return createBaseReceiveBuilder()
-                // handlers for messages in the ask-response system
-                .match(AskResponse.class, askSupport::handleResponse)
-                .match(AskTimeout.class, askSupport::handleTimeout)
-                .build();
+        return createBaseReceiveBuilder().match(CSReadResult.class, CSAsk::handleResponse)
+                                         // ask handlers
+                                         .match(CSAskTimeout.class, CSAsk::handleTimeout).build();
     }
-    
 }

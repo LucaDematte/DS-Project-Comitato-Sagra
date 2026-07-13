@@ -3,14 +3,14 @@ package it.unitn.ds.cs.messages;
 import java.io.Serializable;
 import java.util.UUID;
 
-public abstract class CSAsk implements Serializable {
-    public final UUID uuid;
+public abstract class CSAskMessage implements Serializable {
+    public final UUID askUUID;
     
-    public CSAsk() {
-        this.uuid = UUID.randomUUID();
+    public CSAskMessage() {
+        this.askUUID = UUID.randomUUID();
     }
     
-    public CSAsk(UUID uuid) {
-        this.uuid = uuid;
+    public CSAskMessage(UUID uuid) {
+        this.askUUID = uuid;
     }
 }

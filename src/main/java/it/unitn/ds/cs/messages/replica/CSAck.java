@@ -1,7 +1,11 @@
 package it.unitn.ds.cs.messages.replica;
 
-import java.io.Serializable;
+import it.unitn.ds.cs.messages.CSAskMessage;
 
-public class CSAck implements Serializable {
-    int seqn;
+import java.util.UUID;
+
+public class CSAck extends CSAskMessage {
+    public CSAck(UUID uuid) {
+        super(uuid);
+    }
 }

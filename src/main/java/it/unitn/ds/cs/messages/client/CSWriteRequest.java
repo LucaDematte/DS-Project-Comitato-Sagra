@@ -1,10 +1,8 @@
 package it.unitn.ds.cs.messages.client;
 
-import it.unitn.ds.cs.CSAsk;
+import it.unitn.ds.cs.messages.CSAskMessage;
 
-import java.io.Serializable;
-
-public class CSWriteRequest extends CSAsk implements Serializable {
+public class CSWriteRequest extends CSAskMessage {
     public final int index;
     public final int value;
     

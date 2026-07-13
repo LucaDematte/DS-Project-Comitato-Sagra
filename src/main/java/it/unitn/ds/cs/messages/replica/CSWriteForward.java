@@ -1,17 +1,17 @@
 package it.unitn.ds.cs.messages.replica;
 
-import it.unitn.ds.cs.CSAsk;
+import it.unitn.ds.cs.messages.CSAskMessage;
 import it.unitn.ds.cs.messages.client.CSWriteRequest;
 
-import java.io.Serializable;
 import java.util.UUID;
 
-public class CSWriteForward extends CSAsk implements Serializable {
-    
+public class CSWriteForward extends CSAskMessage {
     public final CSWriteRequest request;
+    public final UUID writeRequestUUID;
     
-    public CSWriteForward(UUID uuid, CSWriteRequest request) {
-        super(uuid);
+    public CSWriteForward(CSWriteRequest request, UUID writeRequestUUID) {
+        super();
+        this.writeRequestUUID = writeRequestUUID;
         this.request = request;
     }
 }

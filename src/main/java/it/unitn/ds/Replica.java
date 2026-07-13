@@ -2,8 +2,12 @@ package it.unitn.ds;
 
 import akka.actor.ActorRef;
 import akka.actor.Props;
-import it.unitn.ds.cs.*;
-import it.unitn.ds.cs.messages.AskTimeout;
+import it.unitn.ds.cs.CSAsk;
+import it.unitn.ds.cs.CSLogger;
+import it.unitn.ds.cs.CSUpdateData;
+import it.unitn.ds.cs.CSUpdateKey;
+import it.unitn.ds.cs.messages.CSAskMessage;
+import it.unitn.ds.cs.messages.CSAskTimeout;
 import it.unitn.ds.cs.messages.client.CSReadRequest;
 import it.unitn.ds.cs.messages.client.CSWriteRequest;
 import it.unitn.ds.cs.messages.coordinator.CSCrashNotice;
@@ -19,43 +23,45 @@ import java.time.Duration;
 import java.util.*;
 
 public class Replica extends AbstractReplica {
-    private final AskResponseSystem askSupport = new AskResponseSystem(getContext(), this::tell);
-    
     // Replica
     Map<Integer, ActorRef> replicas = new HashMap<>(AbstractReplica.POSITIONS_LIST_LENGTH);
     int previous, next;
     int coordinatorId;
     int[] positions; //maybe do a hashmap
-    UpdateLog updateLog;
-    
+    final CSLogger logger = new CSLogger();
+
     // Coordinator
-    CSUpdateKey nextUpdateKey;
+    CSUpdateKey updateKey;
     Map<CSUpdateKey, Integer> receivedAcks = new HashMap<>();
+    /**
+     * The queue is of CSWriteForward instead of CSWriteRequest
+     * Because additional information is needed and are inserted in CSWriteForward
+     * to leave the implementation of CSWriteRequest clean
+     */
     Queue<CSWriteForward> queue = new LinkedList<>();
     boolean processing;
-    
+
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY,
                 AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
     }
-    
+
     public Replica(
             int id, int minLatency, int maxLatency, int coordinatorBeatInterval,
             Optional<ActorRef> listener
     ) {
         super(id, minLatency, maxLatency, coordinatorBeatInterval, listener);
         this.positions = new int[AbstractReplica.POSITIONS_LIST_LENGTH];
-        this.nextUpdateKey = new CSUpdateKey(0, 0);
+        this.updateKey = new CSUpdateKey(0, 0);
         this.processing = false;
-        this.updateLog = new UpdateLog();
     }
-    
+
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
         return Props.create(Replica.class,
                 () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval,
                         Optional.empty()));
     }
-    
+
     // Props method for automated tests
     public static Props propsWithListener(
             int id, int minLatency, int maxLatency, int coordinatorBeatInterval,
@@ -65,12 +71,12 @@ public class Replica extends AbstractReplica {
                 () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval,
                         Optional.ofNullable(listener)));
     }
-    
+
     @Override
     public int getSystemNumberOfActors() {
         return this.replicas.size();
     }
-    
+
     @Override
     public void crash(AbstractReplica.Crash how_to_crash) {
         // TODO: implement
@@ -78,187 +84,178 @@ public class Replica extends AbstractReplica {
         // - Use message counters to trigger crashes at specific points
         // - Once crashed, ignore all incoming messages
     }
-    
+
     @Override
     public void initSystem(InitSystem sysInit) {
         this.replicas = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
-        
+
         this.previous = (this.id - 1) % this.replicas.size();
         this.next = (this.id + 1) % this.replicas.size();
-        
+
         if (this.id == this.coordinatorId) {
             getContext().become(coordinator());
         }
     }
-    
-    public void handleReadRequest(CSReadRequest msg) {
+
+    private void handleReadRequest(CSReadRequest msg) {
         try {
             int result = this.positions[msg.index];
-            tell(AskResponseSystem.reply(msg.uuid,
-                    new CSReadResult(true, msg.index, result, this.id)), getSender());
+            tell(new CSReadResult(true, msg.index, result, this.id, msg.askUUID), getSender());
         } catch (IndexOutOfBoundsException e) {
-            tell(AskResponseSystem.reply(msg.uuid, new CSReadResult(false, msg.index, 0, this.id)),
-                    getSender());
+            tell(new CSReadResult(false, msg.index, 0, this.id, msg.askUUID), getSender());
         }
     }
-    
-    public void handleWriteRequest(CSWriteRequest msg) {
-        UUID uuid = this.updateLog.addLocal(msg.uuid, msg.index, msg.value,
-                UpdateStatus.UNPROCESSED, getSender());
-        log("Adding new local update coming from client " + getSender().path()
-                                                                       .name() + " with uuid " + uuid);
-        
-        Duration timeout = Duration.ofMillis(AbstractReplica.MAX_LATENCY * 2);
-        
-        askSupport.<CSAck>ask(new CSWriteForward(uuid, msg), replicas.get(this.coordinatorId),
+
+    private void handleWriteRequest(CSWriteRequest msg) {
+        UUID writeRequestUUID = UUID.randomUUID();
+        this.logger.logRequest(writeRequestUUID, new CSUpdateData(msg.index, msg.value, false), getSender(),
+                this.id, msg.askUUID);
+
+        super.log("Adding new local update coming from client " + getSender().path()
+                .name() + " with uuid " + writeRequestUUID);
+
+        Duration timeout = Duration.ofMillis(super.getMaxLatencyPlusTolerance());
+
+        CSAsk.<CSUpdate>ask(getContext(), super::tell, new CSWriteForward(msg, writeRequestUUID), replicas.get(this.coordinatorId),
                 timeout, (res, timedOut) -> {
                     if (timedOut) {
                         election();
                     }
                 });
     }
-    
-    public void handleWriteRequestCoordinator(CSWriteRequest msg) {
-        //        log("Write Request Received from" + this.id);
-        
-        UUID uuid = this.updateLog.addLocal(msg.uuid, msg.index, msg.value,
-                UpdateStatus.UNPROCESSED, getSender());
-        log("Adding new local update coming from client " + getSender().path()
-                                                                       .name() + " with uuid " + uuid);
-        log("Adding update to queue");
-        this.queue.add(new CSWriteForward(uuid, msg));
-        processNextUpdate();
+
+    private void handleWriteRequestCoordinator(CSWriteRequest msg) {
+        UUID writeRequestUUID = UUID.randomUUID();
+        this.logger.logRequest(writeRequestUUID, new CSUpdateData(msg.index, msg.value, false), getSender(),
+                this.id, msg.askUUID);
+
+        super.log("Adding new local update coming from client " + getSender().path()
+                .name() + " with uuid " + writeRequestUUID);
+        super.log("Adding update to queue");
+
+        this.queue.add(new CSWriteForward(msg, writeRequestUUID));
+        processUpdates();
     }
-    
-    public void handleWriteForward(CSWriteForward msg) {
-        log("Adding update to queue");
+
+    private void handleWriteForward(CSWriteForward msg) {
+        super.log("Adding update to queue");
         this.queue.add(msg);
-        tell(AskResponseSystem.reply(msg.uuid, new CSAck()), getSender());
-        processNextUpdate();
+        super.tell(new CSAck(msg.askUUID), getSender());
+        processUpdates();
     }
-    
-    public void handleUpdate(CSUpdate msg) {
-        log("Received Update with key:" + msg.key);
-        this.updateLog.addRemote(msg.key, msg.uuid, msg.update.index(), msg.update.value());
-        tell(AskResponseSystem.reply(msg.uuid, new CSAck()), getSender());
+
+    private void handleUpdate(CSUpdate msg) {
+        super.log("Received Update with key:" + msg.key);
+        this.logger.logUpdate(msg.key, msg.writeRequestUUID, msg.data);
+        super.tell(new CSAck(msg.askUUID), getSender());
     }
-    
+
     // =================================================================================
     // Update Protocol
     // =================================================================================
-    
-    public void processNextUpdate() {
+
+    private void processUpdates() {
         if (!this.processing) {
             if (!this.queue.isEmpty()) {
                 this.processing = true;
-                CSWriteForward current = this.queue.poll();
-                log("Starting processing a message");
-                update(current);
+                var current = this.queue.poll();
+                super.log("Starting processing a message");
+                this.update(current);
             } else {
-                log("No more messages to process");
+                super.log("No more messages to process");
             }
         } else {
-            log("Already processing a message");
+            super.log("Already processing a message");
         }
     }
-    
-    public final void update(CSWriteForward msg) {
+
+    private void update(CSWriteForward msg) {
         // Deep copy to avoid working on actor state
-        CSUpdateKey updateKey = new CSUpdateKey(this.nextUpdateKey);
-        
-        this.updateLog.addRemote(updateKey, msg.uuid, msg.request.index, msg.request.value);
+        CSUpdateKey updateKey = new CSUpdateKey(this.updateKey);
+
         this.receivedAcks.put(updateKey, 1); // coordinator immediately acks to itself
-        
-        // TODO Now that we use the right tell() (with network delays) we must choose timeouts wisely
-        Duration timeout = Duration.ofMillis(1000);
-        multicast(new CSUpdate(msg.uuid, updateKey,
-                        new CSUpdateValue(msg.request.index, msg.request.value, false)), timeout,
+
+        Duration timeout = Duration.ofMillis(super.getMaxLatencyPlusTolerance());
+        multicast(new CSUpdate(updateKey, new CSUpdateData(msg.request.index, msg.request.value, false),
+                        msg.writeRequestUUID,
+                        msg.askUUID), timeout,
                 Optional.empty(), (replicaId, res, timedOut) -> {
                     if (!timedOut) {
-                        log("Received ack from: " + replicaId);
+                        super.log("Received ack from: " + replicaId);
                         this.receivedAcks.put(updateKey, this.receivedAcks.get(updateKey) + 1);
-                        
-                        // slash with integers always floor, happens only once because of ==
-                        if (this.receivedAcks.get(updateKey) == this.replicas.size() / 2 + 1) {
-                            log("Quorum reached for update " + updateKey + ", sending WriteOk to replicas");
+
+                        // slash with integers always floor
+                        if (this.receivedAcks.get(updateKey) == this.replicas.size() / 2 + 1) { // happens only once because of ==
+                            super.log("Quorum reached for update " + updateKey + ", sending WriteOk to replicas");
                             multicast(new CSWriteOk(updateKey), Optional.empty());
-                            
-                            completeUpdate(updateKey);
-                            
+                            this.completeUpdate(updateKey);
                             this.processing = false;
-                            processNextUpdate();
+                            processUpdates(); // continue processing untile queue is empty
                         }
                     } else {
                         int crashed_replica_id = replicaId;
-                        
-                        log("Replica with ID " + crashed_replica_id + " crashed! Sending notices to replicas");
-                        
+
+                        super.log("Replica with ID " + crashed_replica_id + " crashed! Sending notices to replicas");
+
                         // TODO removing replicas from the list causes problems with the quorum calculation
-                        // Also, it is not possible since it is an unmodifiable map
                         this.replicas.remove(crashed_replica_id);
-                        
+
                         int previous_replica_id = this.replicas.keySet()
-                                                               .stream()
-                                                               .filter(id -> id < crashed_replica_id)
-                                                               .max(Integer::compare)
-                                                               .orElse(Collections.min(
-                                                                       this.replicas.keySet()));
+                                .stream()
+                                .filter(id -> id < crashed_replica_id)
+                                .max(Integer::compare)
+                                .orElse(Collections.min(
+                                        this.replicas.keySet()));
                         int next_replica_id = this.replicas.keySet()
-                                                           .stream()
-                                                           .filter(id -> id > crashed_replica_id)
-                                                           .min(Integer::compare)
-                                                           .orElse(Collections.max(
-                                                                   this.replicas.keySet()));
+                                .stream()
+                                .filter(id -> id > crashed_replica_id)
+                                .min(Integer::compare)
+                                .orElse(Collections.max(
+                                        this.replicas.keySet()));
                         this.replicas.get(previous_replica_id)
-                                     .tell(new CSCrashNotice(crashed_replica_id,
-                                             previous_replica_id, next_replica_id), getSelf());
+                                .tell(new CSCrashNotice(crashed_replica_id,
+                                        previous_replica_id, next_replica_id), getSelf());
                         this.replicas.get(next_replica_id)
-                                     .tell(new CSCrashNotice(crashed_replica_id,
-                                             previous_replica_id, next_replica_id), getSelf());
+                                .tell(new CSCrashNotice(crashed_replica_id,
+                                        previous_replica_id, next_replica_id), getSelf());
                     }
                 });
-        this.nextUpdateKey = new CSUpdateKey(this.nextUpdateKey.epoch(),
-                this.nextUpdateKey.seq_no() + 1); //TODO check if final is needed
+        this.updateKey = new CSUpdateKey(this.updateKey.epoch,
+                this.updateKey.seq_no + 1);
     }
-    
+
     public final void handleWriteOk(CSWriteOk msg) {
-        log("Received WriteOk with key:" + msg.key);
-        
-        //      try {
-        completeUpdate(msg.key);
-        //      }catch(Exception e){
-        //          log("Error while handling writeOk: " + e.getMessage());
-        //      }
-        
+        super.log("Received WriteOk with key:" + msg.key);
+
+        this.completeUpdate(msg.key);
+        this.sendWriteResult(msg.key);
     }
-    
+
     public void completeUpdate(CSUpdateKey key) {
-        //log("Writing to positions");
-        UpdateData update = this.updateLog.get(key);
+        super.log("Writing to positions");
+        CSUpdateData update = this.logger.getUpdateData(key);
         this.positions[update.index] = update.value;
         callbackOnUpdateApplied(update.index, update.value);
-        this.updateLog.setCompleted(key);
-        sendWriteResult(key);
+        this.logger.setCompleted(key);
     }
-    
+
     public void sendWriteResult(CSUpdateKey key) {
-        UpdateData update = this.updateLog.get(key);
-        UUID updateUUID = this.updateLog.getUUIDBinding(key);
-        if (update.localRequest) {
-            log("Sending WriteResult to client " + update.client.path().name());
-            tell(AskResponseSystem.reply(updateUUID,
-                    new CSWriteResult(true, update.index, update.value, this.id)), update.client);
+        CSUpdateData update = this.logger.getUpdateData(key);
+        CSLogger.CSClientData client = this.logger.getClientData(key);
+        if (this.id == client.contactedReplicaId()) { // TODO: is there any better way of doing this?
+            super.log("Sending WriteResult to client " + client.actor().toString());
+            super.tell(new CSWriteResult(update.index, update.value, true, this.id, client.askUUID()), client.actor());
         } else {
-            //log("I'm not the original handler of this update, no need to send result to any client");
+            super.log("I'm not the original handler of this update, no need to send result to any client");
         }
     }
-    
+
     // TODO: implement coordinator crash detection
     // - Coordinator multicasts heartbeat messages
     // - Replicas monitor heartbeat
     // - Coordinator election is triggered if heartbeat is not received or if expected messages are not received
-    
+
     // TODO: implement coordinator election
     // - When crash detected: send ELECTION message to next replica
     // - Each replica adds its knowledge of the latest update and forwards
@@ -267,39 +264,38 @@ public class Replica extends AbstractReplica {
     // - New coordinator sends SYNCHRONIZATION and replicas update their coordinator reference
     // - Sends any missing updates to other replicas
     public final void election() {
-    
+
     }
-    
+
     @FunctionalInterface
     interface ReplicaHandler {
         void handle(Integer replica_id, Object result, boolean timedOut);
     }
-    
-    public final void multicast(
-            CSAsk msg, Duration timeout, Optional<Integer> crash_message_n,
-            ReplicaHandler handler
+
+    public final void multicast(CSAskMessage msg, Duration timeout, Optional<Integer> crash_message_n,
+                                ReplicaHandler handler
     ) {
         var group = new HashMap<>(this.replicas);
         group.remove(this.coordinatorId); // multicast does not include coordinator
-        
+
         int i = 0;
         for (var replica : group.entrySet()) {
             if (crash_message_n.isPresent() && i == crash_message_n.get()) {
                 // crash
             }
-            
-            askSupport.ask(msg, replica.getValue(), timeout, (res, timedOut) -> {
+
+            CSAsk.ask(getContext(), super::tell, msg, replica.getValue(), timeout, (res, timedOut) -> {
                 handler.handle(replica.getKey(), res, timedOut);
             });
-            
+
             i++;
         }
     }
-    
+
     public final void multicast(Serializable msg, Optional<Integer> crash_message_n) {
         var group = new HashMap<>(this.replicas);
         group.remove(this.coordinatorId); // multicast does not include coordinator
-        
+
         int i = 0;
         for (var replica : group.entrySet()) {
             if (crash_message_n.isPresent() && i == crash_message_n.get()) {
@@ -308,7 +304,7 @@ public class Replica extends AbstractReplica {
             tell(msg, replica.getValue());
         }
     }
-    
+
     public final void handleCrashNotice(CSCrashNotice msg) {
         if (this.id < msg.crashed_id) {
             this.next = msg.next;
@@ -316,29 +312,31 @@ public class Replica extends AbstractReplica {
             this.previous = msg.previous;
         }
     }
-    
+
     @Override
     public final Receive createReceive() {
-        return createBaseReceiveBuilder().match(CSReadRequest.class, this::handleReadRequest)
-                                         .match(CSWriteRequest.class, this::handleWriteRequest)
-                                         .match(CSCrashNotice.class, this::handleCrashNotice)
-                                         .match(CSUpdate.class, this::handleUpdate)
-                                         .match(CSWriteOk.class, this::handleWriteOk)
-                                         
-                                         // handlers for messages in the ask-response system
-                                         .match(AskTimeout.class, askSupport::handleTimeout)
-                                         .build();
+        return createBaseReceiveBuilder()
+                .match(CSReadRequest.class, this::handleReadRequest)
+                .match(CSWriteRequest.class, this::handleWriteRequest)
+                .match(CSCrashNotice.class, this::handleCrashNotice)
+                .match(CSUpdate.class, this::handleUpdate)
+                .match(CSWriteOk.class, this::handleWriteOk)
+
+                // ask handlers
+                .match(CSAskTimeout.class, CSAsk::handleTimeout)
+                .build();
     }
-    
+
     public final Receive coordinator() {
-        return receiveBuilder().match(CSReadRequest.class, this::handleReadRequest)
-                               .match(CSWriteRequest.class, this::handleWriteRequestCoordinator)
-                               .match(CSWriteForward.class, this::handleWriteForward)
-                               // handlers for messages in the ask-response system
-                               //.match(AskResponse.class, askSupport::handleResponse)
-                               //.match(AskRequest.class, this::onAskRequest)
-                               .match(AskTimeout.class, askSupport::handleTimeout)
-                               .build();
+        return receiveBuilder()
+                .match(CSReadRequest.class, this::handleReadRequest)
+                .match(CSWriteRequest.class, this::handleWriteRequestCoordinator)
+                .match(CSWriteForward.class, this::handleWriteForward)
+
+                // ask handlers
+                .match(CSAck.class, CSAsk::handleResponse)
+                .match(CSAskTimeout.class, CSAsk::handleTimeout)
+                .build();
     }
-    
+
 }
