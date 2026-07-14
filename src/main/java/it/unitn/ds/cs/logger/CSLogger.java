@@ -66,6 +66,10 @@ public class CSLogger {
         return this.uuidToClientBindings.get(this.keyToUUIDBindings.get(key));
     }
     
+    public boolean containsClientData(CSUpdateKey key) {
+        return this.uuidToClientBindings.containsKey(this.keyToUUIDBindings.get(key));
+    }
+    
     public void setCompleted(CSUpdateKey key) {
         var old = this.updates.get(this.keyToUUIDBindings.get(key));
         this.updates.replace(this.keyToUUIDBindings.get(key),
