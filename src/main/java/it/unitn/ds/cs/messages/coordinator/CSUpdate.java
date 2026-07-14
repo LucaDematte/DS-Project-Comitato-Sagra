@@ -18,4 +18,11 @@ public class CSUpdate extends CSAskMessage implements Serializable {
         this.data = data;
         this.writeRequestUUID = writeRequestUUID;
     }
+    
+    public CSUpdate(CSUpdateKey key, CSUpdateData data, UUID writeRequestUUID) {
+        super();
+        this.key = key;
+        this.data = data;
+        this.writeRequestUUID = writeRequestUUID;
+    }
 }

@@ -16,4 +16,9 @@ public class CSUpdateKey {
     public CSUpdateKey(CSUpdateKey k) {
         this(k.epoch, k.seq_no);
     }
+    
+    @Override
+    public String toString() {
+        return "[" + epoch + ", " + seq_no + "]";
+    }
 }

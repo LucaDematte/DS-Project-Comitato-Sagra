@@ -48,40 +48,42 @@ public class Client extends AbstractClient {
         dst.tell(m, getSelf());
     }
     
+    CSAsk askSystem = new CSAsk(getContext(), this::tell);
+    
     @Override
     public void sendRead(ActorRef replica, int index) {
         Duration timeout = Duration.ofMillis(super.getReadTimeoutDelay());
         
-        CSAsk.<CSReadResult>ask(getContext(), this::tell, new CSReadRequest(index), replica,
-                timeout, (res, timedOut) -> {
-                    if (!timedOut) {
-                        // call when the result is received
-                        callbackOnReadResult(
-                                new ReadResult(res.success, res.index, res.value, res.replicaId));
-                    } else {
-                        // call when the timeout expires
-                        callbackOnReadTimeout(new ReadTimeout(getSelf(), replica, index));
-                    }
-                });
+        askSystem.<CSReadResult>ask(new CSReadRequest(index), replica, timeout, (res, timedOut) -> {
+            if (!timedOut) {
+                // call when the result is received
+                callbackOnReadResult(
+                        new ReadResult(res.success, res.index, res.value, res.replicaId));
+            } else {
+                // call when the timeout expires
+                callbackOnReadTimeout(new ReadTimeout(getSelf(), replica, index));
+            }
+        });
     }
     
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
-        log("Sending write request to " + replica.path()
-                                                 .name() + ": set P[" + index + "] to " + value);
+        super.debug("Sending write request to " + replica.path()
+                                                         .name() + ": set P[" + index + "] to " + value);
         
         Duration timeout = Duration.ofMillis(getWriteTimeoutDelay());
         
-        CSAsk.<CSWriteResult>ask(getContext(), this::tell, new CSWriteRequest(index, value),
-                replica, timeout, (res, timedOut) -> {
+        askSystem.<CSWriteResult>ask(new CSWriteRequest(index, value), replica, timeout,
+                (res, timedOut) -> {
                     if (!timedOut) {
                         // call when the result is received
-                        log("Received write result: P[" + res.index + "] = " + res.value + " (success = " + res.success + ")");
+                        super.debug(
+                                "Received WriteResult: P[" + res.index + "] = " + res.value + " (success = " + res.success + ")");
                         callbackOnWriteResult(
                                 new WriteResult(res.success, res.index, res.value, res.replicaId));
                     } else {
                         // call when the timeout expires
-                        log("Write timeout expired");
+                        super.debug("Write timeout expired");
                         callbackOnWriteTimeout(new WriteTimeout(getSelf(), replica, index, value));
                     }
                 });
@@ -89,8 +91,10 @@ public class Client extends AbstractClient {
     
     @Override
     public final Receive createReceive() {
-        return createBaseReceiveBuilder().match(CSReadResult.class, CSAsk::handleResponse)
+        return createBaseReceiveBuilder().match(CSReadResult.class, askSystem::handleResponse)
+                                         .match(CSWriteResult.class, askSystem::handleResponse)
                                          // ask handlers
-                                         .match(CSAskTimeout.class, CSAsk::handleTimeout).build();
+                                         .match(CSAskTimeout.class, askSystem::handleTimeout)
+                                         .build();
     }
 }

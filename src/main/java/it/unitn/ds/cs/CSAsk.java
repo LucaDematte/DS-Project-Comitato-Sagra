@@ -13,7 +13,14 @@ import java.util.Map;
 import java.util.UUID;
 
 public class CSAsk {
-    private static final Map<UUID, PendingAsk> pending = new HashMap<>();
+    private final AbstractActor.ActorContext context;
+    private final Sender sender;
+    private final Map<UUID, PendingAsk> pending = new HashMap<>();
+    
+    public CSAsk(AbstractActor.ActorContext context, Sender sender) {
+        this.context = context;
+        this.sender = sender;
+    }
     
     @FunctionalInterface
     public interface Sender {
@@ -25,21 +32,21 @@ public class CSAsk {
         void handle(T response, boolean timedOut);
     }
     
-    public static <T extends CSAskMessage> void ask(
-            AbstractActor.ActorContext context, Sender sender, CSAskMessage msg,
-            ActorRef destination, Duration timeout, Callback<T> callback
+    public <T extends CSAskMessage> void ask(
+            CSAskMessage msg, ActorRef destination,
+            Duration timeout, Callback<T> callback
     ) {
-        Cancellable timer = context.system()
-                                   .scheduler()
-                                   .scheduleOnce(timeout, context.self(),
-                                           new CSAskTimeout(msg.askUUID), context.dispatcher(),
-                                           ActorRef.noSender());
+        Cancellable timer = this.context.system()
+                                        .scheduler()
+                                        .scheduleOnce(timeout, this.context.self(),
+                                                new CSAskTimeout(msg.askUUID),
+                                                this.context.dispatcher(), ActorRef.noSender());
         
         pending.put(msg.askUUID, new PendingAsk<T>(callback, timer));
-        sender.send(msg, destination);
+        this.sender.send(msg, destination);
     }
     
-    public static void handleResponse(CSAskMessage msg) {
+    public void handleResponse(CSAskMessage msg) {
         PendingAsk p = pending.remove(msg.askUUID);
         if (p == null) {
             // Nessuna ask in sospeso con questo id: il timeout è già scattato prima,
@@ -50,7 +57,7 @@ public class CSAsk {
         p.callback.handle(msg, false);
     }
     
-    public static void handleTimeout(CSAskTimeout timeout) {
+    public void handleTimeout(CSAskTimeout timeout) {
         PendingAsk p = pending.remove(timeout.uuid);
         if (p == null) {
             // La risposta era già arrivata prima dello scadere del timeout: niente da fare.
@@ -59,7 +66,7 @@ public class CSAsk {
         p.callback.handle(null, true);
     }
     
-    private static final class PendingAsk<T extends CSAskMessage> {
+    private final class PendingAsk<T extends CSAskMessage> {
         final Callback<T> callback;
         final Cancellable timer;
         
