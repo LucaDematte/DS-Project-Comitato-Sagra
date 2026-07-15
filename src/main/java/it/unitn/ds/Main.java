@@ -40,7 +40,6 @@ public class Main {
         
         // TODO: Implement your main logic
 //        client1.tell(new AbstractClient.ReadRequest(0), ActorRef.noSender());
-        client1.tell(new AbstractClient.WriteRequest(0, 10, replicas.get(0)), ActorRef.noSender());
         client1.tell(new AbstractClient.WriteRequest(0, 20, replicas.get(0)), ActorRef.noSender());
         client1.tell(new AbstractClient.WriteRequest(0, 30, replicas.get(0)), ActorRef.noSender());
         client1.tell(new AbstractClient.WriteRequest(0, 40, replicas.get(0)), ActorRef.noSender());

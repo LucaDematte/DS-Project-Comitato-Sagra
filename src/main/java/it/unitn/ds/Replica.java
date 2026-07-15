@@ -90,11 +90,12 @@ public class Replica extends AbstractReplica {
     
     @Override
     public void crash(AbstractReplica.Crash how_to_crash) {
+        super.debug("Received crash instructions: after " + how_to_crash.after_n_messages_of_type + " messages of type "+ how_to_crash.type.name());
         // Registering new instruction in the crash system
         this.crashSystem.addInstruction(how_to_crash);
         // Check if it was an instruction of type Now (if it is, become crashed)
         if(this.crashSystem.shouldCrashNow()) {
-            getContext().become(crashed());
+            this.becomeCrashed();
         }
     }
     
@@ -257,7 +258,7 @@ public class Replica extends AbstractReplica {
             });
             
             if(this.crashSystem.shouldCrashAfterThisUpdate()){
-                getContext().become(crashed());
+                this.becomeCrashed();
             }
         }
         this.multicast(otherReplicas, () -> new CSUpdate(updateKey, data,
@@ -324,7 +325,7 @@ public class Replica extends AbstractReplica {
         super.debug("Received Coordinator HeartBeat");
         
         if(this.crashSystem.shouldCrashAfterThisHeartBeat()){
-            getContext().become(crashed());
+            this.becomeCrashed();
         }
     }
     
@@ -353,6 +354,7 @@ public class Replica extends AbstractReplica {
     }
     
     private void becomeCoordinator() {
+        super.debug("Becoming coordinator");
         getContext().become(coordinator());
         this.heartBeatTimer = getContext().system().scheduler().scheduleWithFixedDelay(
                 Duration.ofMillis(0),
@@ -361,6 +363,15 @@ public class Replica extends AbstractReplica {
                 new CSHeartBeatFromCoordinator(),
                 getContext().system().dispatcher(),
                 ActorRef.noSender());
+    }
+    
+    private void becomeCrashed() {
+        super.debug("Switching to crashed mode");
+        if (this.heartBeatTimer != null) {
+            this.heartBeatTimer.cancel();
+            this.heartBeatTimer = null;
+        }
+        getContext().become(crashed());
     }
     
     @FunctionalInterface
@@ -406,7 +417,10 @@ public class Replica extends AbstractReplica {
         for (var replica : group.entrySet()) {
             super.tell(msg, replica.getValue());
             
-            this.checkForCrashAfterSendingMsg(msg);
+            if (this.checkForCrashAfterSendingMsg(msg)) {
+                this.becomeCrashed();
+                return;
+            }
         }
     }
     
@@ -421,25 +435,24 @@ public class Replica extends AbstractReplica {
                 handler.handle(replica.getKey(), res, timedOut);
             });
             
-            this.checkForCrashAfterSendingMsg(msg);
+            if (this.checkForCrashAfterSendingMsg(msg)) {
+                this.becomeCrashed();
+                return;
+            }
             
             i++;
         }
     }
     
-    private void checkForCrashAfterSendingMsg(Serializable msg) {
+    private boolean checkForCrashAfterSendingMsg(Serializable msg) {
         switch(msg) {
             case CSUpdate msg1 -> {
-                if (this.crashSystem.shouldCrashAfterThisUpdate()) {
-                    getContext().become(crashed());
-                }
+                return this.crashSystem.shouldCrashAfterThisUpdate();
             }
             case CSWriteOk msg1 -> {
-                if (this.crashSystem.shouldCrashAfterThisWriteOk()) {
-                    getContext().become(crashed());
-                }
+                return this.crashSystem.shouldCrashAfterThisWriteOk();
             }
-            default -> { }
+            default -> { return false; }
         }
     }
     
@@ -480,7 +493,23 @@ public class Replica extends AbstractReplica {
                 .build();
     }
     
+    private void messageBlackHole(Serializable msg) {
+    }
+    
     private Receive crashed() {
-        return receiveBuilder().build();
+        return receiveBuilder()
+                .match(CSReadRequest.class, this::messageBlackHole)
+                .match(CSWriteRequest.class, this::messageBlackHole)
+                .match(CSWriteForward.class, this::messageBlackHole)
+                .match(CSCrashNotice.class, this::messageBlackHole)
+                .match(CSUpdate.class, this::messageBlackHole)
+                .match(CSWriteOk.class, this::messageBlackHole)
+                .match(CSHeartBeatFromCoordinator.class, this::messageBlackHole)
+                .match(CSHeartBeatCheck.class, this::messageBlackHole)
+                
+                // ask handlers
+                .match(CSAck.class, this::messageBlackHole)
+                .match(CSAskTimeout.class, this::messageBlackHole)
+                .build();
     }
 }
