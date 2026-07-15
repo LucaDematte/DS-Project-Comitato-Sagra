@@ -4,6 +4,7 @@ import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import akka.actor.Props;
 import it.unitn.ds.cs.CSAsk;
+import it.unitn.ds.cs.CSCrashSystem;
 import it.unitn.ds.cs.CSUpdateData;
 import it.unitn.ds.cs.CSUpdateKey;
 import it.unitn.ds.cs.logger.CSClientData;
@@ -30,7 +31,8 @@ import java.util.function.Supplier;
 public class Replica extends AbstractReplica {
     CSAsk askSystem = new CSAsk(getContext(), super::tell);
     Cancellable heartBeatTimer;
-
+    CSCrashSystem crashSystem = new CSCrashSystem();
+    
     // Replica
     Map<Integer, ActorRef> replicas = new HashMap<>(AbstractReplica.POSITIONS_LIST_LENGTH);
     int previous, next;
@@ -38,7 +40,7 @@ public class Replica extends AbstractReplica {
     int[] positions; //maybe do a hashmap
     final CSLogger logger = new CSLogger();
     boolean heartBeatReceived;
-
+    
     // Coordinator
     CSUpdateKey updateKey;
     Map<CSUpdateKey, Integer> receivedAcks = new HashMap<>();
@@ -49,12 +51,12 @@ public class Replica extends AbstractReplica {
      */
     Queue<CSWriteForward> queue = new LinkedList<>();
     boolean processing;
-
+    
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY,
-                AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
+             AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
     }
-
+    
     public Replica(
             int id, int minLatency, int maxLatency, int coordinatorBeatInterval,
             Optional<ActorRef> listener
@@ -64,44 +66,46 @@ public class Replica extends AbstractReplica {
         this.updateKey = new CSUpdateKey(0, 0);
         this.processing = false;
     }
-
+    
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
         return Props.create(Replica.class,
-                () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval,
-                        Optional.empty()));
+                            () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval,
+                                              Optional.empty()));
     }
-
+    
     // Props method for automated tests
     public static Props propsWithListener(
             int id, int minLatency, int maxLatency, int coordinatorBeatInterval,
             ActorRef listener
     ) {
         return Props.create(Replica.class,
-                () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval,
-                        Optional.ofNullable(listener)));
+                            () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval,
+                                              Optional.ofNullable(listener)));
     }
-
+    
     @Override
     public int getSystemNumberOfActors() {
         return this.replicas.size();
     }
-
+    
     @Override
     public void crash(AbstractReplica.Crash how_to_crash) {
-        // TODO: implement
-        // - Handle the different crash types
-        // - Use message counters to trigger crashes at specific points
-        // - Once crashed, ignore all incoming messages
+        // Registering new instruction in the crash system
+        this.crashSystem.addInstruction(how_to_crash);
+        // Check if it was an instruction of type Now (if it is, become crashed)
+        if(this.crashSystem.shouldCrashNow()) {
+            getContext().become(crashed());
+        }
     }
-
+    
     @Override
     public void initSystem(InitSystem sysInit) {
         this.replicas = new HashMap<>(sysInit.group);
         this.coordinatorId = sysInit.coordinator_id;
-
+        
         this.previous = (this.id - 1) % this.replicas.size();
         this.next = (this.id + 1) % this.replicas.size();
-
+        
         if (this.id == this.coordinatorId) {
             this.becomeCoordinator();
         } else {
@@ -109,7 +113,7 @@ public class Replica extends AbstractReplica {
             this.heartBeatTimer = null;
         }
     }
-
+    
     private void handleReadRequest(CSReadRequest msg) {
         try {
             int result = this.positions[msg.index];
@@ -118,19 +122,19 @@ public class Replica extends AbstractReplica {
             tell(new CSReadResult(false, msg.index, 0, this.id, msg.askUUID), getSender());
         }
     }
-
+    
     private void handleWriteRequest(CSWriteRequest msg) {
         UUID writeRequestUUID = UUID.randomUUID();
         var clientData = new CSClientData(getSender(), this.id, msg.askUUID);
         this.logger.logRequest(writeRequestUUID, new CSUpdateData(msg.index, msg.value, false), clientData);
-
+        
         super.debug("Adding new update coming from client " + getSender().path()
-                .name() + " with uuid " + writeRequestUUID);
-
+                                                                         .name() + " with uuid " + writeRequestUUID);
+        
         Duration timeout = Duration.ofMillis(super.getMaxLatencyPlusTolerance());
-
+        
         askSystem.<CSUpdate>ask(new CSWriteForward(msg, writeRequestUUID, clientData), replicas.get(this.coordinatorId),
-                timeout, (res, timedOut) -> {
+                                timeout, (res, timedOut) -> {
                     if (timedOut) {
                         election();
                     } else {
@@ -138,37 +142,37 @@ public class Replica extends AbstractReplica {
                     }
                 });
     }
-
+    
     private void handleWriteRequestCoordinator(CSWriteRequest msg) {
         UUID writeRequestUUID = UUID.randomUUID();
         super.debug("WriteRequest askUUID: " + msg.askUUID);
         var clientData = new CSClientData(getSender(), this.id, msg.askUUID);
         this.logger.logRequest(writeRequestUUID, new CSUpdateData(msg.index, msg.value, false), clientData);
-
+        
         super.debug("Received write request from client: " + getSender().path()
-                .name() + " - uuid: " + writeRequestUUID);
-
+                                                                        .name() + " - uuid: " + writeRequestUUID);
+        
         this.queue.add(new CSWriteForward(msg, writeRequestUUID, clientData));
         super.debug("Update added to queue");
         processUpdates();
     }
-
+    
     private void handleWriteForward(CSWriteForward msg) {
         super.debug("Adding update to queue");
         this.queue.add(msg);
         processUpdates();
     }
-
+    
     private void handleUpdate(CSUpdate msg) {
         super.debug("Received Update with key:" + msg.key);
         this.logger.logUpdate(msg.key, msg.writeRequestUUID, msg.data);
         super.tell(new CSAck(msg.askUUID), getSender());
     }
-
+    
     // =================================================================================
     // Update Protocol
     // =================================================================================
-
+    
     private void processUpdates() {
         if (!this.processing) {
             if (!this.queue.isEmpty()) {
@@ -183,33 +187,33 @@ public class Replica extends AbstractReplica {
             super.debug("Already processing an update");
         }
     }
-
+    
     private void update(CSWriteForward msg) {
         // Deep copy to avoid working on actor state
         CSUpdateKey updateKey = new CSUpdateKey(this.updateKey);
-
+        
         CSUpdateData data = new CSUpdateData(msg.request.index, msg.request.value, false);
         this.logger.logUpdate(updateKey, msg.writeRequestUUID, data);
-
+        
         this.receivedAcks.put(updateKey, 1); // coordinator immediately acks to itself
-
+        
         var otherReplicas = new HashMap<>(this.replicas);
-
+        
         otherReplicas.remove(this.coordinatorId); // same as this.id because update is executed only by the coordinator
         otherReplicas.remove(msg.clientData.contactedReplicaId);
-
+        
         Duration timeout = Duration.ofMillis(2L * super.getMaxLatencyPlusTolerance());
-
+        
         ReplicaHandler handler = (replicaId, res, timedOut) -> {
             if (!timedOut) {
                 super.debug("Received ack from: " + replicaId);
                 this.receivedAcks.put(updateKey, this.receivedAcks.get(updateKey) + 1);
-
+                
                 // slash with integers always floor
                 if (this.receivedAcks.get(updateKey) == this.replicas.size() / 2 + 1) { // happens only once because of ==
                     super.debug("Quorum reached for update " + updateKey + ", sending WriteOk to replicas");
-                    broadcast(new CSWriteOk(updateKey), Optional.empty());
-
+                    broadcast(new CSWriteOk(updateKey));
+                    
                     this.completeUpdate(updateKey);
                     this.sendWriteResult(updateKey);
                     this.processing = false;
@@ -217,57 +221,60 @@ public class Replica extends AbstractReplica {
                 }
             } else {
                 int crashed_replica_id = replicaId;
-
+                
                 super.debug("Replica with ID " + crashed_replica_id + " crashed! Sending notices to replicas");
-
+                
                 this.replicas.remove(crashed_replica_id);
-
+                
                 int previous_replica_id = this.replicas.keySet()
-                        .stream()
-                        .filter(id -> id < crashed_replica_id)
-                        .max(Integer::compare)
-                        .orElse(Collections.min(
-                                this.replicas.keySet()));
+                                                       .stream()
+                                                       .filter(id -> id < crashed_replica_id)
+                                                       .max(Integer::compare)
+                                                       .orElse(Collections.min(
+                                                               this.replicas.keySet()));
                 int next_replica_id = this.replicas.keySet()
-                        .stream()
-                        .filter(id -> id > crashed_replica_id)
-                        .min(Integer::compare)
-                        .orElse(Collections.max(
-                                this.replicas.keySet()));
+                                                   .stream()
+                                                   .filter(id -> id > crashed_replica_id)
+                                                   .min(Integer::compare)
+                                                   .orElse(Collections.max(
+                                                           this.replicas.keySet()));
                 this.replicas.get(previous_replica_id)
-                        .tell(new CSCrashNotice(crashed_replica_id,
-                                previous_replica_id, next_replica_id), getSelf());
+                             .tell(new CSCrashNotice(crashed_replica_id,
+                                                     previous_replica_id, next_replica_id), getSelf());
                 this.replicas.get(next_replica_id)
-                        .tell(new CSCrashNotice(crashed_replica_id,
-                                previous_replica_id, next_replica_id), getSelf());
+                             .tell(new CSCrashNotice(crashed_replica_id,
+                                                     previous_replica_id, next_replica_id), getSelf());
             }
         };
-
+        
         // note: coordinator never sends messages to itself
         // always handles updates by managing internal state
         if (this.coordinatorId != msg.clientData.contactedReplicaId) {
             askSystem.<CSAck>ask(new CSUpdate(updateKey, data,
-                    msg.writeRequestUUID,
-                    msg.askUUID), this.replicas.get(msg.clientData.contactedReplicaId), timeout, (res, timedOut) -> {
+                                              msg.writeRequestUUID,
+                                              msg.askUUID), this.replicas.get(msg.clientData.contactedReplicaId), timeout, (res, timedOut) -> {
                 handler.handle(msg.clientData.contactedReplicaId, res, timedOut);
             });
+            
+            if(this.crashSystem.shouldCrashAfterThisUpdate()){
+                getContext().become(crashed());
+            }
         }
         this.multicast(otherReplicas, () -> new CSUpdate(updateKey, data,
-                        msg.writeRequestUUID), timeout,
-                Optional.empty(), handler);
+                                                         msg.writeRequestUUID), timeout, handler);
         super.debug("Sent update" + updateKey + " to replicas");
-
+        
         this.updateKey = new CSUpdateKey(this.updateKey.epoch,
-                this.updateKey.seq_no + 1);
+                                         this.updateKey.seq_no + 1);
     }
-
+    
     public final void handleWriteOk(CSWriteOk msg) {
         super.debug("Received WriteOk with key:" + msg.key);
-
+        
         this.completeUpdate(msg.key);
         this.sendWriteResult(msg.key);
     }
-
+    
     public void completeUpdate(CSUpdateKey key) {
         super.debug("Writing to positions");
         CSUpdateData update = this.logger.getUpdateData(key);
@@ -275,10 +282,10 @@ public class Replica extends AbstractReplica {
         callbackOnUpdateApplied(update.index, update.value);
         this.logger.setCompleted(key);
     }
-
+    
     public void sendWriteResult(CSUpdateKey key) {
         CSUpdateData update = this.logger.getUpdateData(key);
-
+        
         if (this.logger.containsClientData(key)) {
             var clientData = this.logger.getClientData(key);
             if (this.id == clientData.contactedReplicaId) {
@@ -289,17 +296,17 @@ public class Replica extends AbstractReplica {
             }
         }
     }
-
+    
     // TODO: implement coordinator crash detection
     // - Coordinator multicasts heartbeat messages
     // - Replicas monitor heartbeat
     // - Coordinator election is triggered if heartbeat is not received or if expected messages are not received
     private void handleHeartBeatCoordinator(CSHeartBeatFromCoordinator msg) {
-        this.broadcast(new CSHeartBeatFromCoordinator(), Optional.empty());
-
+        this.broadcast(new CSHeartBeatFromCoordinator());
+        
         super.debug("Coordinator HeartBeat");
     }
-
+    
     private void handleHeartBeatFromCoordinator(CSHeartBeatFromCoordinator msg) {
         if (this.heartBeatTimer == null) {
             // This is the first heartbeat from the coordinator
@@ -313,10 +320,14 @@ public class Replica extends AbstractReplica {
                     ActorRef.noSender());
         }
         this.heartBeatReceived = true;
-
+        
         super.debug("Received Coordinator HeartBeat");
+        
+        if(this.crashSystem.shouldCrashAfterThisHeartBeat()){
+            getContext().become(crashed());
+        }
     }
-
+    
     private void handleHeartBeatCheck(CSHeartBeatCheck msg) {
         if (this.heartBeatReceived) {
             this.heartBeatReceived = false;
@@ -324,7 +335,7 @@ public class Replica extends AbstractReplica {
             this.election();
         }
     }
-
+    
     // TODO: implement coordinator election
     // - When crash detected: send ELECTION message to next replica
     // - Each replica adds its knowledge of the latest update and forwards
@@ -337,10 +348,10 @@ public class Replica extends AbstractReplica {
             this.heartBeatTimer.cancel();
             this.heartBeatTimer = null;
         }
-
+        
         super.debug("Election Started");
     }
-
+    
     private void becomeCoordinator() {
         getContext().become(coordinator());
         this.heartBeatTimer = getContext().system().scheduler().scheduleWithFixedDelay(
@@ -351,77 +362,87 @@ public class Replica extends AbstractReplica {
                 getContext().system().dispatcher(),
                 ActorRef.noSender());
     }
-
+    
     @FunctionalInterface
     public interface ReplicaHandler {
         void handle(Integer replica_id, CSAskMessage result, boolean timedOut);
     }
-
+    
     /**
      * send to every replica but itself
      *
      * @param msg
      * @param timeout
-     * @param crash_message_n
      * @param handler
      */
-    public final void broadcast(CSAskMessage msg, Duration timeout, Optional<Integer> crash_message_n,
+    public final void broadcast(CSAskMessage msg, Duration timeout,
                                 ReplicaHandler handler
     ) {
         var group = new HashMap<>(this.replicas);
         group.remove(this.id);
-
+        
         int i = 0;
         for (var replica : group.entrySet()) {
-            if (crash_message_n.isPresent() && i == crash_message_n.get()) {
-                // crash
-            }
-
             askSystem.ask(msg, replica.getValue(), timeout, (res, timedOut) -> {
                 handler.handle(replica.getKey(), res, timedOut);
             });
-
+            
+            this.checkForCrashAfterSendingMsg(msg);
+            
             i++;
         }
     }
-
+    
     /**
      * send to every replica but itself
      *
      * @param msg
-     * @param crash_message_n
      */
-    public final void broadcast(Serializable msg, Optional<Integer> crash_message_n) {
+    public final void broadcast(Serializable msg) {
         var group = new HashMap<>(this.replicas);
         group.remove(this.id); // multicast does not include coordinator
-
+        
         int i = 0;
         for (var replica : group.entrySet()) {
-            if (crash_message_n.isPresent() && i == crash_message_n.get()) {
-                // crash
-            }
             super.tell(msg, replica.getValue());
+            
+            this.checkForCrashAfterSendingMsg(msg);
         }
     }
-
+    
     public final void multicast(HashMap<Integer, ActorRef> group, Supplier<CSAskMessage> msgFactory, Duration timeout,
-                                Optional<Integer> crash_message_n,
                                 ReplicaHandler handler
     ) {
         int i = 0;
         for (var replica : group.entrySet()) {
-            if (crash_message_n.isPresent() && i == crash_message_n.get()) {
-                // crash
-            }
-
-            askSystem.ask(msgFactory.get(), replica.getValue(), timeout, (res, timedOut) -> {
+            CSAskMessage msg = msgFactory.get();
+            
+            askSystem.ask(msg, replica.getValue(), timeout, (res, timedOut) -> {
                 handler.handle(replica.getKey(), res, timedOut);
             });
-
+            
+            this.checkForCrashAfterSendingMsg(msg);
+            
             i++;
         }
     }
-
+    
+    private void checkForCrashAfterSendingMsg(Serializable msg) {
+        switch(msg) {
+            case CSUpdate msg1 -> {
+                if (this.crashSystem.shouldCrashAfterThisUpdate()) {
+                    getContext().become(crashed());
+                }
+            }
+            case CSWriteOk msg1 -> {
+                if (this.crashSystem.shouldCrashAfterThisWriteOk()) {
+                    getContext().become(crashed());
+                }
+            }
+            default -> { }
+        }
+    }
+    
     public final void handleCrashNotice(CSCrashNotice msg) {
         if (this.id < msg.crashed_id) {
             this.next = msg.next;
@@ -429,7 +450,7 @@ public class Replica extends AbstractReplica {
             this.previous = msg.previous;
         }
     }
-
+    
     @Override
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
@@ -440,25 +461,25 @@ public class Replica extends AbstractReplica {
                 .match(CSWriteOk.class, this::handleWriteOk)
                 .match(CSHeartBeatFromCoordinator.class, this::handleHeartBeatFromCoordinator)
                 .match(CSHeartBeatCheck.class, this::handleHeartBeatCheck)
-
+                
                 // ask handlers
                 .match(CSAskTimeout.class, askSystem::handleTimeout)
                 .build();
     }
-
+    
     public final Receive coordinator() {
-        return receiveBuilder()
+        return createBaseReceiveBuilder()
                 .match(CSReadRequest.class, this::handleReadRequest)
                 .match(CSWriteRequest.class, this::handleWriteRequestCoordinator)
                 .match(CSWriteForward.class, this::handleWriteForward)
                 .match(CSHeartBeatFromCoordinator.class, this::handleHeartBeatCoordinator)
-
+                
                 // ask handlers
                 .match(CSAck.class, askSystem::handleResponse)
                 .match(CSAskTimeout.class, askSystem::handleTimeout)
                 .build();
     }
-
+    
     private Receive crashed() {
         return receiveBuilder().build();
     }
