@@ -14,6 +14,23 @@ import java.time.Duration;
 import java.util.Optional;
 
 public class Client extends AbstractClient {
+    /**
+     * Wrapper for {@code tell} with the same signature from {@code AbstractReplica.tell}
+     * Needed to enable the client to use the custom ask system.
+     * @param m The message to be sent.
+     * @param dst The reference to the destination actor.
+     */
+    void tell(Serializable m, ActorRef dst) {
+        dst.tell(m, getSelf());
+    }
+    
+    /** System to send messages (with ask) that expect a response within a given timeout. More info at {@link CSAsk}. */
+    CSAsk askSystem = new CSAsk(getContext(), this::tell);
+    
+    // =================================================================================
+    // Builder methods & initialization
+    // =================================================================================
+    
     Client(
             long readTimeoutDelay, long writeTimeoutDelay, Optional<ActorRef> defaultTargetReplica,
             Optional<ActorRef> listener
@@ -40,15 +57,9 @@ public class Client extends AbstractClient {
                         Optional.ofNullable(listener)));
     }
     
-    /**
-     * Wrapper for tell with the same signature from AbstractReplica.tell
-     * Needed to enable the client to use the custom ask system.
-     */
-    void tell(Serializable m, ActorRef dst) {
-        dst.tell(m, getSelf());
-    }
-    
-    CSAsk askSystem = new CSAsk(getContext(), this::tell);
+    // =================================================================================
+    // READ & WRITE REQUESTS
+    // =================================================================================
     
     @Override
     public void sendRead(ActorRef replica, int index) {
