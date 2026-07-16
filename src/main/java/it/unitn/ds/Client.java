@@ -17,14 +17,18 @@ public class Client extends AbstractClient {
     /**
      * Wrapper for {@code tell} with the same signature from {@code AbstractReplica.tell}
      * Needed to enable the client to use the custom ask system.
-     * @param m The message to be sent.
+     *
+     * @param m   The message to be sent.
      * @param dst The reference to the destination actor.
      */
     void tell(Serializable m, ActorRef dst) {
         dst.tell(m, getSelf());
     }
     
-    /** System to send messages (with ask) that expect a response within a given timeout. More info at {@link CSAsk}. */
+    /**
+     * System to send messages (with ask) that expect a response within a given timeout.
+     * More info at {@link CSAsk}.
+     */
     CSAsk askSystem = new CSAsk(getContext(), this::tell);
     
     // =================================================================================
@@ -43,8 +47,12 @@ public class Client extends AbstractClient {
             Optional<ActorRef> defaultTargetReplica
     ) {
         return Props.create(Client.class,
-                () -> new Client(readTimeoutDelay, writeTimeoutDelay, defaultTargetReplica,
-                        Optional.empty()));
+                            () -> new Client(readTimeoutDelay,
+                                             writeTimeoutDelay,
+                                             defaultTargetReplica,
+                                             Optional.empty()
+                            )
+        );
     }
     
     // Props method for automated tests
@@ -53,8 +61,12 @@ public class Client extends AbstractClient {
             ActorRef listener
     ) {
         return Props.create(Client.class,
-                () -> new Client(readTimeoutDelay, writeTimeoutDelay, defaultTargetReplica,
-                        Optional.ofNullable(listener)));
+                            () -> new Client(readTimeoutDelay,
+                                             writeTimeoutDelay,
+                                             defaultTargetReplica,
+                                             Optional.ofNullable(listener)
+                            )
+        );
     }
     
     // =================================================================================
@@ -66,15 +78,19 @@ public class Client extends AbstractClient {
         Duration timeout = Duration.ofMillis(super.getReadTimeoutDelay());
         
         askSystem.<CSReadResult>ask(new CSReadRequest(index), replica, timeout, (res, timedOut) -> {
-            if (!timedOut) {
-                // call when the result is received
-                callbackOnReadResult(
-                        new ReadResult(res.success, res.index, res.value, res.replicaId));
-            } else {
-                // call when the timeout expires
-                callbackOnReadTimeout(new ReadTimeout(getSelf(), replica, index));
-            }
-        });
+                                        if (!timedOut) {
+                                            // call when the result is received
+                                            callbackOnReadResult(new ReadResult(res.success,
+                                                                                res.index,
+                                                                                res.value,
+                                                                                res.replicaId
+                                            ));
+                                        } else {
+                                            // call when the timeout expires
+                                            callbackOnReadTimeout(new ReadTimeout(getSelf(), replica, index));
+                                        }
+                                    }
+        );
     }
     
     @Override
@@ -84,20 +100,29 @@ public class Client extends AbstractClient {
         
         Duration timeout = Duration.ofMillis(getWriteTimeoutDelay());
         
-        askSystem.<CSWriteResult>ask(new CSWriteRequest(index, value), replica, timeout,
-                (res, timedOut) -> {
-                    if (!timedOut) {
-                        // call when the result is received
-                        super.debug(
-                                "Received WriteResult: P[" + res.index + "] = " + res.value + " (success = " + res.success + ")");
-                        callbackOnWriteResult(
-                                new WriteResult(res.success, res.index, res.value, res.replicaId));
-                    } else {
-                        // call when the timeout expires
-                        super.debug("Write timeout expired");
-                        callbackOnWriteTimeout(new WriteTimeout(getSelf(), replica, index, value));
-                    }
-                });
+        askSystem.<CSWriteResult>ask(new CSWriteRequest(index, value),
+                                     replica,
+                                     timeout,
+                                     (res, timedOut) -> {
+                                         if (!timedOut) {
+                                             // call when the result is received
+                                             super.debug("Received WriteResult: P[" + res.index + "] = " + res.value + " (success = " + res.success + ")");
+                                             callbackOnWriteResult(new WriteResult(res.success,
+                                                                                   res.index,
+                                                                                   res.value,
+                                                                                   res.replicaId
+                                             ));
+                                         } else {
+                                             // call when the timeout expires
+                                             super.debug("Write timeout expired");
+                                             callbackOnWriteTimeout(new WriteTimeout(getSelf(),
+                                                                                     replica,
+                                                                                     index,
+                                                                                     value
+                                             ));
+                                         }
+                                     }
+        );
     }
     
     @Override

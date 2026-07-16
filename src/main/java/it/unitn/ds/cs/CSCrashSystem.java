@@ -5,8 +5,8 @@ import it.unitn.ds.AbstractReplica;
 import java.util.HashMap;
 
 /**
- * The crash system maintains all crash instructions given to a replica and tracks the progress towards
- * crashes that must happen after a certain amount of processed messages of a certain kind.
+ * The crash system maintains all crash instructions given to a replica and tracks the progress
+ * towards crashes that must happen after a certain amount of processed messages of a certain kind.
  */
 public class CSCrashSystem {
     /** This map keeps track of the number of messages left for each kind of crash registered. */
@@ -17,8 +17,9 @@ public class CSCrashSystem {
     }
     
     /**
-     * Registers a new crash type. This method should be called whenever the replica receives a
-     * crash message ({@link it.unitn.ds.AbstractReplica.Crash}).
+     * Registers a new crash type.
+     * This method should be called whenever the replica receives a crash message
+     * ({@link it.unitn.ds.AbstractReplica.Crash}).
      *
      * @param crash The object containing the crash instruction provided to the replica (the content
      *              of the crash message).
@@ -28,8 +29,9 @@ public class CSCrashSystem {
     }
     
     /**
-     * Checks if a crash of type {@code Now} has been registered in the crash system. This method should be
-     * called after addInstruction whenever the replica receives a crash message.
+     * Checks if a crash of type {@code Now} has been registered in the crash system.
+     * This method should be called after addInstruction whenever the replica receives a crash
+     * message.
      *
      * @return Whether the replica should crash after this method is called.
      */
@@ -38,8 +40,9 @@ public class CSCrashSystem {
     }
     
     /**
-     * Checks if a crash of type {@code Heartbeat} has been registered in the crash system. This method
-     * should be called after the replica has received a HEARTBEAT message from the coordinator.
+     * Checks if a crash of type {@code Heartbeat} has been registered in the crash system.
+     * This method should be called after the replica has received a HEARTBEAT message from the
+     * coordinator.
      *
      * @return Whether the replica should crash after this method is called.
      */
@@ -48,8 +51,8 @@ public class CSCrashSystem {
     }
     
     /**
-     * Checks if a crash of type {@code Update} has been registered in the crash system. This method
-     * should be called after the replica has processed an UPDATE message.
+     * Checks if a crash of type {@code Update} has been registered in the crash system.
+     * This method should be called after the replica has processed an UPDATE message.
      *
      * @return Whether the replica should crash after this method is called.
      */
@@ -58,8 +61,8 @@ public class CSCrashSystem {
     }
     
     /**
-     * Checks if a crash of type {@code WriteOk} has been registered in the crash system. This method
-     * should be called after the replica has processed a WRITEOK message.
+     * Checks if a crash of type {@code WriteOk} has been registered in the crash system.
+     * This method should be called after the replica has processed a WRITEOK message.
      *
      * @return Whether the replica should crash after this method is called.
      */
@@ -68,8 +71,9 @@ public class CSCrashSystem {
     }
     
     /**
-     * Checks if a crash of type {@code Election} has been registered in the crash system. This method
-     * should be called after the replica has processed a message related to the election protocol.
+     * Checks if a crash of type {@code Election} has been registered in the crash system.
+     * This method should be called after the replica has processed a message related to the
+     * election protocol.
      *
      * @return Whether the replica should crash after this method is called.
      */
@@ -78,9 +82,10 @@ public class CSCrashSystem {
     }
     
     /**
-     * Business logic to check if the replica should crash after a given event. If the replica
-     * should crash, the method returns {@code true}, otherwise the number of messages left before crashing
-     * stored in the map is decreased by one and {@code false} is returned.
+     * Business logic to check if the replica should crash after a given event.
+     * If the replica should crash, the method returns {@code true}, otherwise the number of
+     * messages left before crashing stored in the map is decreased by one and {@code false} is
+     * returned.
      *
      * @param event The kind of event that should be checked for a crash.
      * @return Whether the replica should crash after this method is called.
