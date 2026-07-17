@@ -3,6 +3,7 @@ package it.unitn.ds.cs.logger;
 import it.unitn.ds.cs.CSUpdateData;
 import it.unitn.ds.cs.CSUpdateKey;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -112,6 +113,16 @@ public class CSLogger {
     public void setCompleted(CSUpdateKey key) {
         var old = this.updates.get(this.keyToUUIDBindings.get(key));
         this.updates.replace(this.keyToUUIDBindings.get(key),
-                new CSUpdateData(old.index, old.value, true));
+                             new CSUpdateData(old.index, old.value, true)
+        );
+    }
+    
+    public CSUpdateKey getLastUpdateKey() {
+        if (this.keyToUUIDBindings.isEmpty()) {
+            // If the replica doesn't have any update, return an update key that is "before" the first update
+            return new CSUpdateKey(-1, -1);
+        } else {
+            return Collections.max(this.keyToUUIDBindings.keySet());
+        }
     }
 }

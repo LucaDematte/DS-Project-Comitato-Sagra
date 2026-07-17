@@ -131,6 +131,12 @@ public class CSAsk {
         p.callback.handle(null, true);
     }
     
+    public void cancelAllCallbacks() {
+        this.pending.forEach((uuid, p) -> {
+            p.timer.cancel();
+        });
+    }
+    
     /**
      * An object representing a pending request. It stores the callback to be executed and the timer
      * after which the response is considered out of time.

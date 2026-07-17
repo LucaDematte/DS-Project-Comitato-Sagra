@@ -14,14 +14,8 @@ import it.unitn.ds.cs.messages.CSAskTimeout;
 import it.unitn.ds.cs.messages.client.CSHeartBeatCheck;
 import it.unitn.ds.cs.messages.client.CSReadRequest;
 import it.unitn.ds.cs.messages.client.CSWriteRequest;
-import it.unitn.ds.cs.messages.coordinator.CSCrashNotice;
-import it.unitn.ds.cs.messages.coordinator.CSHeartBeatFromCoordinator;
-import it.unitn.ds.cs.messages.coordinator.CSUpdate;
-import it.unitn.ds.cs.messages.coordinator.CSWriteOk;
-import it.unitn.ds.cs.messages.replica.CSAck;
-import it.unitn.ds.cs.messages.replica.CSReadResult;
-import it.unitn.ds.cs.messages.replica.CSWriteForward;
-import it.unitn.ds.cs.messages.replica.CSWriteResult;
+import it.unitn.ds.cs.messages.coordinator.*;
+import it.unitn.ds.cs.messages.replica.*;
 
 import java.io.Serializable;
 import java.time.Duration;
@@ -73,6 +67,9 @@ public class Replica extends AbstractReplica {
      */
     boolean heartBeatReceived;
     
+    boolean electing = false;
+    int electionInitiatorId;
+    
     // =================================== COORDINATOR ===================================
     
     /** The next update key to be assigned at a new update. */
@@ -117,6 +114,7 @@ public class Replica extends AbstractReplica {
         this.positions = new int[AbstractReplica.POSITIONS_LIST_LENGTH];
         this.updateKey = new CSUpdateKey(0, 0);
         this.processing = false;
+        this.electionInitiatorId = -1;   // this way the first election received is considered
     }
     
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -161,9 +159,7 @@ public class Replica extends AbstractReplica {
         if (this.id == this.coordinatorId) {
             this.becomeCoordinator();
         } else {
-            this.heartBeatReceived = false;
-            // The timer for replicas is initialized after the first heartbeat is received
-            this.heartBeatTimer = null;
+            this.becomeReplica();
         }
     }
     
@@ -223,7 +219,9 @@ public class Replica extends AbstractReplica {
                                 (res, timedOut) -> {
                                     if (timedOut) {
                                         // If the UPDATE message is not received, the coordinator must have crashed
-                                        election();
+                                        super.debug(
+                                                "No update received after forwarding a request. Starting election.");
+                                        startElection();
                                     } else {
                                         super.debug("Forward did not time out");
                                     }
@@ -319,6 +317,7 @@ public class Replica extends AbstractReplica {
         // The coordinator logs the update in its local update list (if he didn't do it already before in handleWriteRequestCoordinator)
         CSUpdateData data = new CSUpdateData(msg.request.index, msg.request.value, false);
         this.logger.logUpdate(updateKey, msg.writeRequestUUID, data);
+        this.logger.logRequest(msg.writeRequestUUID, data, msg.clientData);
         
         // The number of received ACKs for this update is initialized
         this.receivedAcks.put(updateKey, 1); // coordinator immediately acks to itself
@@ -382,6 +381,7 @@ public class Replica extends AbstractReplica {
         // note: coordinator never sends messages to itself
         // always handles updates by managing internal state
         if (this.coordinatorId != msg.clientData.contactedReplicaId) {
+            super.debug("Sending update to the replica which forwarded the request");
             askSystem.<CSAck>ask(new CSUpdate(updateKey, data, msg.writeRequestUUID, msg.askUUID),
                                  this.replicas.get(msg.clientData.contactedReplicaId),
                                  timeout,
@@ -418,6 +418,7 @@ public class Replica extends AbstractReplica {
      */
     private void handleUpdate(CSUpdate msg) {
         super.debug("Received Update with key:" + msg.key);
+        this.askSystem.handleResponse(msg);     // Needed for the replica that forwarded the update to the coordinator
         // The replica logs the update in its local update list and sends an ACK back to the coordinator
         this.logger.logUpdate(msg.key, msg.writeRequestUUID, msg.data);
         super.tell(new CSAck(msg.askUUID), getSender());
@@ -506,21 +507,6 @@ public class Replica extends AbstractReplica {
      * @param msg The HEARTBEAT message sent by the coordinator.
      */
     private void handleHeartBeatFromCoordinator(CSHeartBeatFromCoordinator msg) {
-        if (this.heartBeatTimer == null) {
-            // This is the first heartbeat from the coordinator
-            // as it is up and running correctly we can start checking the heartbeat
-            this.heartBeatTimer = getContext().system()
-                                              .scheduler()
-                                              .scheduleWithFixedDelay(Duration.ofMillis(0),
-                                                                      Duration.ofMillis(
-                                                                              AbstractReplica.COORDINATOR_BEAT_INTERVAL + super.getMaxLatencyPlusTolerance()),
-                                                                      getSelf(),
-                                                                      new CSHeartBeatCheck(),
-                                                                      getContext().system()
-                                                                                  .dispatcher(),
-                                                                      ActorRef.noSender()
-                                              );
-        }
         this.heartBeatReceived = true;
         
         super.debug("Received Coordinator HeartBeat");
@@ -543,7 +529,7 @@ public class Replica extends AbstractReplica {
         } else {
             // If the flag is already false, no HEARTBEAT has been received between this check and the previous one
             // so the coordinator must have crashed
-            this.election();
+            this.startElection();
         }
     }
     
@@ -624,13 +610,156 @@ public class Replica extends AbstractReplica {
     // - When the ring is completed, forward again to the new coordinator (Replica with most recent update wins, break ties with replica ID)
     // - New coordinator sends SYNCHRONIZATION and replicas update their coordinator reference
     // - Sends any missing updates to other replicas
-    public final void election() {
-        if (this.heartBeatTimer != null) {
-            this.heartBeatTimer.cancel();
-            this.heartBeatTimer = null;
+    public void startElection() {
+        if (!electing) {
+            if (this.heartBeatTimer != null) {
+                this.heartBeatTimer.cancel();
+                this.heartBeatTimer = null;
+            }
+            
+            this.becomeElector();
+            callbackOnElectionStarted(this.coordinatorId);
+            
+            super.debug("Election Started");
+            
+            HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>();
+            lastUpdates.put(this.id, this.logger.getLastUpdateKey());
+            CSElection electionMsg = new CSElection(lastUpdates, this.id, this.coordinatorId);
+            
+            this.electionInitiatorId = this.id;
+            
+            this.sendIncompleteElectionMsg(electionMsg);
+        }
+    }
+    
+    public void sendIncompleteElectionMsg(CSElection msg) {
+        super.debug("Forwarding incomplete election message started by " + msg.initiatorId + " to replica " + this.next);
+        
+        Duration timeout = Duration.ofMillis(3000);
+        askSystem.<CSAck>ask(new CSElection(msg),
+                             replicas.get(this.next),
+                             timeout,
+                             (res, timedOut) -> {
+                                 if (timedOut) {
+                                     super.debug("Replica " + this.next + " didn't ACK the election started from " + msg.initiatorId + ", forwarding to the next one in the ring.");
+                                     // The next replica crashed, so the message must be sent to the following one in the ring
+                                     this.next = (this.next + 1) % this.replicas.size();
+                                     this.sendIncompleteElectionMsg(msg);
+                                 } else {
+                                     // If the ACK is received as expected, the replica just needs to wait for the election message to come back
+                                 }
+                             }
+        );
+    }
+    
+    // ACK the sender
+    // If the initiatorId is smaller than the tracked one:
+    //      Do nothing (the election initiated by the replica with the highest ID is the one to track)
+    // Otherwise [1]:
+    //      If the replica ID is not in the message yet:
+    //          Add it and forward to next
+    //      Otherwise [2]:
+    //          If the winner of the election is itself:
+    //              Send synchronization message and update replicas
+    //          Otherwise [3]:
+    //              Forward to next
+    //              If the next is the winner but it doesn't ACK, remove it from the updateList and go back to 2
+    public void handleElection(CSElection msg) {
+        super.tell(new CSAck(msg.askUUID), getSender());
+        
+        // If the replica wasn't already in election state, enters it
+        if (!electing) {
+            this.becomeElector();
+            callbackOnElectionStarted(msg.crashedCoordinatorId);
         }
         
-        super.debug("Election Started");
+        if (msg.initiatorId < this.electionInitiatorId) {
+            super.debug("Ignoring election initiated by " + msg.initiatorId + ", still tracking election from " + this.electionInitiatorId);
+            return;
+        } else {
+            if (!msg.lastUpdates.containsKey(this.id)) {
+                // The election message must complete the ring
+                HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>(msg.lastUpdates);
+                lastUpdates.put(this.id, this.logger.getLastUpdateKey());
+                CSElection electionMsg = new CSElection(lastUpdates,
+                                                        msg.initiatorId,
+                                                        msg.crashedCoordinatorId
+                );
+                
+                this.electionInitiatorId = msg.initiatorId;
+                
+                this.sendIncompleteElectionMsg(electionMsg);
+            } else {
+                this.evaluateCompleteElection(msg);
+            }
+        }
+    }
+    
+    public int computeElectionWinner(Map<Integer, CSUpdateKey> lastUpdates) {
+        return lastUpdates.entrySet()
+                          .stream()
+                          .max(Map.Entry.comparingByValue())
+                          .orElseThrow()
+                          .getKey();
+    }
+    
+    public void evaluateCompleteElection(CSElection msg) {
+        super.debug("Evaluating election started by " + msg.initiatorId + " with: " + msg);
+        // The election message completed a ring
+        if (this.id == computeElectionWinner(msg.lastUpdates)) {
+            super.debug("I won the election initiated by " + msg.initiatorId + "!");
+            
+            callbackOnCoordinatorElected(this.id);
+            
+            this.becomeCoordinator();
+            
+            this.synchronizeAndUpdate();
+        } else {
+            this.sendCompleteElectionMsg(msg);
+        }
+    }
+    
+    public void sendCompleteElectionMsg(CSElection msg) {
+        super.debug("Forwarding complete election message initiated by " + msg.initiatorId + " to replica " + this.next);
+        
+        Duration timeout = Duration.ofMillis(3000);
+        askSystem.<CSAck>ask(new CSElection(msg),
+                             replicas.get(this.next),
+                             timeout,
+                             (res, timedOut) -> {
+                                 if (timedOut) {
+                                     int electionWinner = this.computeElectionWinner(msg.lastUpdates);
+                                     
+                                     if (this.next == electionWinner) {
+                                         super.debug("Replica " + this.next + " didn't ACK the election initiated by " + msg.initiatorId + ", but should become the coordinator! Removing it from the election candidates.");
+                                         // The elected replica crashed before becoming coordinator
+                                         this.next = (this.next + 1) % this.replicas.size();
+                                         HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>(
+                                                 msg.lastUpdates);
+                                         lastUpdates.remove(electionWinner);
+                                         CSElection newElectionMsg = new CSElection(lastUpdates,
+                                                                                    msg.initiatorId,
+                                                                                    msg.crashedCoordinatorId
+                                         );
+                                         // Check if new winner is itself or should forward
+                                         this.evaluateCompleteElection(newElectionMsg);
+                                     } else {
+                                         super.debug("Replica " + this.next + " didn't ACK the complete initiated started by " + msg.initiatorId + ", forwarding to the next one in the ring.");
+                                         // The next replica crashed, so the message must be sent to the following one in the ring
+                                         this.next = (this.next + 1) % this.replicas.size();
+                                         this.sendCompleteElectionMsg(msg);
+                                     }
+                                 } else {
+                                     // If the ACK is received as expected, the replica just needs to wait for the synchronization message to arrive
+                                 }
+                             }
+        );
+    }
+    
+    public void synchronizeAndUpdate() {
+        super.debug("Sending synchronization message to replicas");
+        
+        this.broadcast(new CSSynchronization(this.id));
     }
     
     /**
@@ -638,6 +767,13 @@ public class Replica extends AbstractReplica {
      */
     private void becomeCoordinator() {
         super.debug("Becoming coordinator");
+        // Reset variables used for election
+        this.electing = false;
+        this.electionInitiatorId = -1;
+        // Remove callbacks from previous state
+        this.askSystem.cancelAllCallbacks();
+        
+        this.coordinatorId = this.id;
         getContext().become(coordinator());
         this.heartBeatTimer = getContext().system()
                                           .scheduler()
@@ -645,6 +781,41 @@ public class Replica extends AbstractReplica {
                                                                   Duration.ofMillis(AbstractReplica.COORDINATOR_BEAT_INTERVAL),
                                                                   getSelf(),
                                                                   new CSHeartBeatFromCoordinator(),
+                                                                  getContext().system()
+                                                                              .dispatcher(),
+                                                                  ActorRef.noSender()
+                                          );
+    }
+    
+    private void becomeElector() {
+        // Remove callbacks from previous state
+        this.askSystem.cancelAllCallbacks();
+        getContext().become(elector());
+        this.electing = true;
+    }
+    
+    private void handleSynchronization(CSSynchronization msg) {
+        super.debug("Received synchronization from " + msg.newCoordinatorId);
+        
+        this.coordinatorId = msg.newCoordinatorId;
+        
+        super.callbackOnCoordinatorElected(this.coordinatorId);
+        
+        // Become replica again
+        this.becomeReplica();
+    }
+    
+    private void becomeReplica() {
+        getContext().become(createReceive());
+        
+        // Setting up heartbeat system
+        this.heartBeatReceived = false;
+        this.heartBeatTimer = getContext().system()
+                                          .scheduler()
+                                          .scheduleWithFixedDelay(Duration.ofMillis(AbstractReplica.COORDINATOR_BEAT_INTERVAL / 2),
+                                                                  Duration.ofMillis(AbstractReplica.COORDINATOR_BEAT_INTERVAL + super.getMaxLatencyPlusTolerance()),
+                                                                  getSelf(),
+                                                                  new CSHeartBeatCheck(),
                                                                   getContext().system()
                                                                               .dispatcher(),
                                                                   ActorRef.noSender()
@@ -747,6 +918,7 @@ public class Replica extends AbstractReplica {
                                                 this::handleHeartBeatFromCoordinator
                                          )
                                          .match(CSHeartBeatCheck.class, this::handleHeartBeatCheck)
+                                         .match(CSElection.class, this::handleElection)
                                          
                                          // ask handlers
                                          .match(CSAskTimeout.class, askSystem::handleTimeout)
@@ -767,11 +939,37 @@ public class Replica extends AbstractReplica {
                                          .match(CSHeartBeatFromCoordinator.class,
                                                 this::handleHeartBeatCoordinator
                                          )
+                                         .match(CSElection.class, this::justAck)
+                                         .match(CSSynchronization.class, this::messageBlackHole)
                                          
                                          // ask handlers
                                          .match(CSAck.class, askSystem::handleResponse)
                                          .match(CSAskTimeout.class, askSystem::handleTimeout)
                                          .build();
+    }
+    
+    public Receive elector() {
+        return createBaseReceiveBuilder().match(CSElection.class, this::handleElection)
+                                         .match(CSSynchronization.class,
+                                                this::handleSynchronization
+                                         )
+                                         // Temporary
+                                         .match(CSReadRequest.class, this::messageBlackHole)
+                                         .match(CSWriteRequest.class, this::messageBlackHole)
+                                         .match(CSWriteForward.class, this::messageBlackHole)
+                                         .match(CSCrashNotice.class, this::messageBlackHole)
+                                         .match(CSUpdate.class, this::messageBlackHole)
+                                         .match(CSWriteOk.class, this::messageBlackHole)
+                                         .match(CSHeartBeatFromCoordinator.class,
+                                                this::messageBlackHole
+                                         )
+                                         .match(CSHeartBeatCheck.class, this::messageBlackHole)
+                                         
+                                         // ask handlers
+                                         .match(CSAck.class, askSystem::handleResponse)
+                                         .match(CSAskTimeout.class, askSystem::handleTimeout)
+                                         .build();
+        
     }
     
     /**
@@ -788,7 +986,8 @@ public class Replica extends AbstractReplica {
                                .match(CSWriteOk.class, this::messageBlackHole)
                                .match(CSHeartBeatFromCoordinator.class, this::messageBlackHole)
                                .match(CSHeartBeatCheck.class, this::messageBlackHole)
-                               
+                               .match(CSElection.class, this::messageBlackHole)
+                               .match(CSSynchronization.class, this::messageBlackHole)
                                // ask handlers
                                .match(CSAck.class, this::messageBlackHole)
                                .match(CSAskTimeout.class, this::messageBlackHole)
@@ -805,5 +1004,9 @@ public class Replica extends AbstractReplica {
      * @param msg A message that needs to be ignored.
      */
     private void messageBlackHole(Serializable msg) {
+    }
+    
+    private void justAck(CSAskMessage msg) {
+        this.tell(new CSAck(msg.askUUID), getSender());
     }
 }

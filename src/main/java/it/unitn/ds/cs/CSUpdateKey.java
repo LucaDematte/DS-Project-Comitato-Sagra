@@ -1,5 +1,7 @@
 package it.unitn.ds.cs;
 
+import java.io.Serializable;
+
 /**
  * Represents the pair {@code <e, i>} used by the coordinator to define the order of updates.
  * The values of the pairs store the following information:
@@ -8,7 +10,7 @@ package it.unitn.ds.cs;
  *     <li>{@code i}: the sequence number within an epoch. {@code i} restarts from 0 at the beginning of a new epoch.</li>
  * </ul>
  */
-public class CSUpdateKey {
+public class CSUpdateKey implements Serializable, Comparable<CSUpdateKey> {
     /** The epoch in which the update was processed. */
     public final int epoch;
     /** The sequence number within an epoch. */
@@ -31,5 +33,14 @@ public class CSUpdateKey {
     @Override
     public String toString() {
         return "[" + epoch + ", " + seq_no + "]";
+    }
+    
+    @Override
+    public int compareTo(CSUpdateKey other) {
+        int cmp = Integer.compare(this.epoch, other.epoch);
+        if (cmp != 0) {
+            return cmp;
+        }
+        return Integer.compare(this.seq_no, other.seq_no);
     }
 }
