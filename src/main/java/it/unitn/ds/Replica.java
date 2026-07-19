@@ -22,6 +22,13 @@ import java.time.Duration;
 import java.util.*;
 import java.util.function.Supplier;
 
+// TODO aumentare epoch dopo elezione L
+// TODO aggiornare le repliche dopo elezione L
+// TODO aggiungere timeout nelle repliche tra update e writeok (con ask) E
+// TODO documentazione
+// TODO implementare heartbeat con ask E
+// TODO togliere repliche crashate (e cambiare next e previous) da lista this.replicas (e gestire i messaggi CrashNotice) L
+
 public class Replica extends AbstractReplica {
     /**
      * System to send messages (with ask) that expect a response within a given timeout.
@@ -81,14 +88,14 @@ public class Replica extends AbstractReplica {
      */
     Map<CSUpdateKey, Integer> receivedAcks = new HashMap<>();
     /**
-     * This queue stores the update operations that still need to be processed by the coordinator.
-     * The queue is of {@link CSWriteForward} instead of {@link CSWriteRequest} because additional
-     * information is needed and are inserted in {@link CSWriteForward} to leave the implementation
-     * of {@link CSWriteRequest} clean.
+     * This queue stores the update operations where the coordinator still has to send WriteOk to
+     * replicas.
+     * The queue is of {@link CSUpdateKey} because the update information is not needed anymore,
+     * replicas already know what the update is about.
      */
-    Queue<CSWriteForward> queue = new LinkedList<>();
+    //Queue<CSUpdateKey> queue = new LinkedList<>();
     /**
-     * Flag set to {@code true} while the coordinator is processing an update.
+     * Flag set to {@code true} while the coordinator is sending WriteOks for an update.
      * Used to prevent concurrent processing of multiple updates.
      */
     boolean processing;
@@ -208,11 +215,15 @@ public class Replica extends AbstractReplica {
                                clientData
         );
         
-        super.debug("Adding new update coming from client " + getSender().path()
-                                                                         .name() + " with uuid " + writeRequestUUID);
+        super.debug(
+                "Received write request from client " + getSender().path().name() + " with uuid " +
+                        writeRequestUUID.toString().substring(0, 8) +
+                        ", forwarding to coordinator");
         
         // The request is forwarded to the coordinator
-        Duration timeout = Duration.ofMillis(super.getMaxLatencyPlusTolerance());
+        // super.getMaxLatencyPlusTolerance() * this.replicas.size()
+        //Duration timeout = Duration.ofMillis(2L * super.getMaxLatencyPlusTolerance());
+        Duration timeout = Duration.ofMillis((long) super.getMaxLatencyPlusTolerance() * 3);
         askSystem.<CSUpdate>ask(new CSWriteForward(msg, writeRequestUUID, clientData),
                                 replicas.get(this.coordinatorId),
                                 timeout,
@@ -220,10 +231,13 @@ public class Replica extends AbstractReplica {
                                     if (timedOut) {
                                         // If the UPDATE message is not received, the coordinator must have crashed
                                         super.debug(
-                                                "No update received after forwarding a request. Starting election.");
+                                                "No update received after forwarding request with uuid " +
+                                                        writeRequestUUID.toString()
+                                                                        .substring(0, 8) +
+                                                        ". Starting election.");
                                         startElection();
                                     } else {
-                                        super.debug("Forward did not time out");
+                                        //super.debug("Forward did not time out");
                                     }
                                 }
         );
@@ -231,8 +245,8 @@ public class Replica extends AbstractReplica {
     
     /**
      * Special handler for write requests sent directly to the coordinator.
-     * The write request is added to the queue and then processed with the update protocol so that
-     * the update is applied to all replicas.
+     * The write request is processed with the update protocol so that the update is applied to all
+     * replicas.
      * This handler is used only by the coordinator.
      *
      * @param msg The write request sent by the client.
@@ -242,7 +256,6 @@ public class Replica extends AbstractReplica {
         // generated and appended to the request. The coordinator will send the UPDATE message
         // containing both the update key and the UUID.
         UUID writeRequestUUID = UUID.randomUUID();
-        super.debug("WriteRequest askUUID: " + msg.askUUID);
         
         // The update is logged in the local update list of the coordinator
         var clientData = new CSClientData(getSender(), this.id, msg.askUUID);
@@ -251,55 +264,28 @@ public class Replica extends AbstractReplica {
                                clientData
         );
         
-        super.debug("Received write request from client: " + getSender().path()
-                                                                        .name() + " - uuid: " + writeRequestUUID);
+        super.debug(
+                "Received write request from client " + getSender().path().name() + " with uuid " +
+                        writeRequestUUID.toString().substring(0, 8));
         
-        // The request is added to the queue
-        this.queue.add(new CSWriteForward(msg, writeRequestUUID, clientData));
-        super.debug("Update added to queue");
-        
-        // Since the queue must have at least one update waiting to be processed, the routine to process updates is called
-        processUpdates();
+        this.update(new CSWriteForward(msg, writeRequestUUID, clientData));
     }
     
     /**
      * Handler to receive requests forwarded to the coordinator.
-     * The update request is added to the queue of the coordinator.
      * This handler is used only by the coordinator.
      *
      * @param msg The write request forwarded by a replica to the coordinator.
      */
     private void handleWriteForward(CSWriteForward msg) {
-        super.debug("Adding update to queue");
-        // The request is added to the queue
-        this.queue.add(msg);
-        // Since the queue must have at least one update waiting to be processed, the routine to process updates is called
-        processUpdates();
+        super.debug("Received forwarded request with uuid " +
+                            msg.writeRequestUUID.toString().substring(0, 8));
+        this.update(msg);
     }
     
     // =================================================================================
     // Update Protocol
     // =================================================================================
-    
-    /**
-     * This method must be called whenever there are updates waiting to be processed in the queue of
-     * the coordinator.
-     * It ensures that only one update at a time is being processed.
-     */
-    private void processUpdates() {
-        if (!this.processing) {
-            if (!this.queue.isEmpty()) {
-                this.processing = true;
-                var current = this.queue.poll();
-                super.debug("Starting processing an update");
-                this.update(current);
-            } else {
-                super.debug("No more updates to process");
-            }
-        } else {
-            super.debug("Already processing an update");
-        }
-    }
     
     /**
      * This method processes one update by following the specification of the update protocol.
@@ -314,7 +300,12 @@ public class Replica extends AbstractReplica {
         // Deep copy to avoid working on actor state
         CSUpdateKey updateKey = new CSUpdateKey(this.updateKey);
         
-        // The coordinator logs the update in its local update list (if he didn't do it already before in handleWriteRequestCoordinator)
+        super.debug("Sending update (P[" + msg.request.index + "] = " + msg.request.value +
+                            " to replicas (key: " + updateKey + ", uuid: " +
+                            msg.writeRequestUUID.toString().substring(0, 8) + ")");
+        
+        
+        // The coordinator logs the update in its local update list
         CSUpdateData data = new CSUpdateData(msg.request.index, msg.request.value, false);
         this.logger.logUpdate(updateKey, msg.writeRequestUUID, data);
         this.logger.logRequest(msg.writeRequestUUID, data, msg.clientData);
@@ -327,28 +318,27 @@ public class Replica extends AbstractReplica {
         otherReplicas.remove(this.coordinatorId); // same as this.id because update is executed only by the coordinator
         otherReplicas.remove(msg.clientData.contactedReplicaId);
         
-        Duration timeout = Duration.ofMillis(2L * super.getMaxLatencyPlusTolerance());
+        Duration timeout = Duration.ofMillis((long) super.getMaxLatencyPlusTolerance() * 3);
         
-        // This lambda contains the behavior of the coordinator when an ACK for this update is received (or when the timeout runs out)
         ReplicaHandler handler = (replicaId, res, timedOut) -> {
             if (!timedOut) {
-                super.debug("Received ack from: " + replicaId);
+                super.debug("Replica " + replicaId + " ACKed update " + updateKey);
                 this.receivedAcks.put(updateKey, this.receivedAcks.get(updateKey) + 1);
                 
                 // slash with integers always floor
-                if (this.receivedAcks.get(updateKey) == this.replicas.size() / 2 + 1) { // happens only once because of ==
-                    super.debug("Quorum reached for update " + updateKey + ", sending WriteOk to replicas");
-                    broadcast(new CSWriteOk(updateKey));
+                if (this.receivedAcks.get(updateKey) ==
+                        this.replicas.size() / 2 + 1) { // happens only once because of ==
+                    super.debug(
+                            "Quorum reached for update " + updateKey + ", adding update to queue");
+                    //this.queue.add(updateKey);
                     
-                    this.completeUpdate(updateKey);
-                    this.sendWriteResult(updateKey);
-                    this.processing = false;
-                    processUpdates(); // continue processing other updates until the queue is empty
+                    this.sendWriteOk(updateKey);
                 }
             } else {
                 int crashed_replica_id = replicaId;
                 
-                super.debug("Replica with ID " + crashed_replica_id + " crashed! Sending notices to replicas");
+                super.debug("Replica " + crashed_replica_id + " didn't ACK update " + updateKey +
+                                    " in time, must have crashed! Sending notices to replicas");
                 
                 this.replicas.remove(crashed_replica_id);
                 
@@ -381,7 +371,8 @@ public class Replica extends AbstractReplica {
         // note: coordinator never sends messages to itself
         // always handles updates by managing internal state
         if (this.coordinatorId != msg.clientData.contactedReplicaId) {
-            super.debug("Sending update to the replica which forwarded the request");
+            super.debug(
+                    "Sending update " + updateKey + " to the replica which forwarded the request");
             askSystem.<CSAck>ask(new CSUpdate(updateKey, data, msg.writeRequestUUID, msg.askUUID),
                                  this.replicas.get(msg.clientData.contactedReplicaId),
                                  timeout,
@@ -404,7 +395,6 @@ public class Replica extends AbstractReplica {
                        timeout,
                        handler
         );
-        super.debug("Sent update" + updateKey + " to replicas");
         
         // The key to be assigned to the next update is saved
         this.updateKey = new CSUpdateKey(this.updateKey.epoch, this.updateKey.seq_no + 1);
@@ -425,13 +415,41 @@ public class Replica extends AbstractReplica {
     }
     
     /**
+     * This method must be called whenever there are updates waiting ready in the queue for the
+     * WriteOk sending operation.
+     * It ensures that WriteOks are sent for only one update at a time.
+     */
+    private void sendWriteOk(CSUpdateKey key) {
+//        if (!this.processing) {
+//            if (!this.queue.isEmpty()) {
+//                this.processing = true;
+        //CSUpdateKey current = this.queue.poll();
+        super.debug("Sending WriteOks for update " + key);
+        
+        broadcast(new CSWriteOk(key));
+        
+        //super.debug("Status of update logger: " + this.logger);
+        
+        this.completeUpdate(key);
+        this.sendWriteResult(key);
+//                this.processing = false;
+//                this.sendWriteOk(); // continue processing other updates until the queue is empty
+//            } else {
+//                super.debug("No more updates in queue for WriteOks");
+//            }
+//        } else {
+//            super.debug("Already sending WriteOks for an update");
+//        }
+    }
+    
+    /**
      * Handler to receive WRITEOK messages ({@link CSWriteOk}) sent by the coordinator.
      * This handler is used only by normal replicas.
      *
      * @param msg The message coming from the coordinator.
      */
     public final void handleWriteOk(CSWriteOk msg) {
-        super.debug("Received WriteOk with key:" + msg.key);
+        super.debug("Received WriteOk with key: " + msg.key);
         
         this.completeUpdate(msg.key);
         this.sendWriteResult(msg.key);
@@ -445,7 +463,7 @@ public class Replica extends AbstractReplica {
      * @param key The update key of the update to be completed.
      */
     public void completeUpdate(CSUpdateKey key) {
-        super.debug("Writing to positions");
+        //super.debug("Writing to positions");
         CSUpdateData update = this.logger.getUpdateData(key);
         this.positions[update.index] = update.value;
         callbackOnUpdateApplied(update.index, update.value);
@@ -466,7 +484,9 @@ public class Replica extends AbstractReplica {
         if (this.logger.containsClientData(key)) {
             var clientData = this.logger.getClientData(key);
             if (this.id == clientData.contactedReplicaId) {
-                super.debug("Sending WriteResult for " + key + " to client " + clientData.actor + "UUID: " + clientData.askUUID);
+                super.debug("Sending WriteResult for " + key + " to client " +
+                                    clientData.actor.path().name() + " (askUUID: " +
+                                    clientData.askUUID + ")");
                 super.tell(new CSWriteResult(update.index,
                                              update.value,
                                              true,
@@ -475,7 +495,8 @@ public class Replica extends AbstractReplica {
                            ), clientData.actor
                 );
             } else {
-                super.debug("I'm not the original handler of update " + key + ", no need to send result to any client");
+                super.debug("I'm not the original handler of update " + key +
+                                    ", no need to send result to any client");
             }
         }
     }
@@ -493,7 +514,7 @@ public class Replica extends AbstractReplica {
     private void handleHeartBeatCoordinator(CSHeartBeatFromCoordinator msg) {
         this.broadcast(new CSHeartBeatFromCoordinator());
         
-        super.debug("Coordinator HeartBeat");
+        //super.debug("Coordinator HeartBeat");
     }
     
     /**
@@ -509,7 +530,7 @@ public class Replica extends AbstractReplica {
     private void handleHeartBeatFromCoordinator(CSHeartBeatFromCoordinator msg) {
         this.heartBeatReceived = true;
         
-        super.debug("Received Coordinator HeartBeat");
+        //super.debug("Received Coordinator HeartBeat");
         
         if (this.crashSystem.shouldCrashAfterThisHeartBeat()) {
             this.becomeCrashed();
@@ -529,6 +550,8 @@ public class Replica extends AbstractReplica {
         } else {
             // If the flag is already false, no HEARTBEAT has been received between this check and the previous one
             // so the coordinator must have crashed
+            super.debug(
+                    "No heartbeat received from coordinator in the last period! Starting election.");
             this.startElection();
         }
     }
@@ -539,7 +562,8 @@ public class Replica extends AbstractReplica {
     
     @Override
     public void crash(AbstractReplica.Crash how_to_crash) {
-        super.debug("Received crash instructions: after " + how_to_crash.after_n_messages_of_type + " messages of type " + how_to_crash.type.name());
+        super.debug("Received crash instructions: after " + how_to_crash.after_n_messages_of_type +
+                            " messages of type " + how_to_crash.type.name());
         // Registering new instruction in the crash system
         this.crashSystem.addInstruction(how_to_crash);
         // Check if it was an instruction of type Now (if it is, become crashed)
@@ -603,13 +627,6 @@ public class Replica extends AbstractReplica {
     // ELECTION
     // =================================================================================
     
-    // TODO: implement coordinator election
-    // - When crash detected: send ELECTION message to next replica
-    // - Each replica adds its knowledge of the latest update and forwards
-    // - If timeout: skip crashed replica and forward to next
-    // - When the ring is completed, forward again to the new coordinator (Replica with most recent update wins, break ties with replica ID)
-    // - New coordinator sends SYNCHRONIZATION and replicas update their coordinator reference
-    // - Sends any missing updates to other replicas
     public void startElection() {
         if (!electing) {
             if (this.heartBeatTimer != null) {
@@ -619,8 +636,6 @@ public class Replica extends AbstractReplica {
             
             this.becomeElector();
             callbackOnElectionStarted(this.coordinatorId);
-            
-            super.debug("Election Started");
             
             HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>();
             lastUpdates.put(this.id, this.logger.getLastUpdateKey());
@@ -633,15 +648,19 @@ public class Replica extends AbstractReplica {
     }
     
     public void sendIncompleteElectionMsg(CSElection msg) {
-        super.debug("Forwarding incomplete election message started by " + msg.initiatorId + " to replica " + this.next);
+        super.debug("Forwarding incomplete election message started by " + msg.initiatorId +
+                            " to replica " + this.next);
         
-        Duration timeout = Duration.ofMillis(3000);
+        Duration timeout = Duration.ofMillis(super.getMaxLatency());
         askSystem.<CSAck>ask(new CSElection(msg),
                              replicas.get(this.next),
                              timeout,
                              (res, timedOut) -> {
                                  if (timedOut) {
-                                     super.debug("Replica " + this.next + " didn't ACK the election started from " + msg.initiatorId + ", forwarding to the next one in the ring.");
+                                     super.debug("Replica " + this.next +
+                                                         " didn't ACK the election started from " +
+                                                         msg.initiatorId +
+                                                         ", forwarding to the next one in the ring.");
                                      // The next replica crashed, so the message must be sent to the following one in the ring
                                      this.next = (this.next + 1) % this.replicas.size();
                                      this.sendIncompleteElectionMsg(msg);
@@ -674,7 +693,8 @@ public class Replica extends AbstractReplica {
         }
         
         if (msg.initiatorId < this.electionInitiatorId) {
-            super.debug("Ignoring election initiated by " + msg.initiatorId + ", still tracking election from " + this.electionInitiatorId);
+            super.debug("Ignoring election initiated by " + msg.initiatorId +
+                                ", still tracking election from " + this.electionInitiatorId);
             return;
         } else {
             if (!msg.lastUpdates.containsKey(this.id)) {
@@ -720,9 +740,10 @@ public class Replica extends AbstractReplica {
     }
     
     public void sendCompleteElectionMsg(CSElection msg) {
-        super.debug("Forwarding complete election message initiated by " + msg.initiatorId + " to replica " + this.next);
+        super.debug("Forwarding complete election message initiated by " + msg.initiatorId +
+                            " to replica " + this.next);
         
-        Duration timeout = Duration.ofMillis(3000);
+        Duration timeout = Duration.ofMillis(super.getMaxLatency());
         askSystem.<CSAck>ask(new CSElection(msg),
                              replicas.get(this.next),
                              timeout,
@@ -731,7 +752,10 @@ public class Replica extends AbstractReplica {
                                      int electionWinner = this.computeElectionWinner(msg.lastUpdates);
                                      
                                      if (this.next == electionWinner) {
-                                         super.debug("Replica " + this.next + " didn't ACK the election initiated by " + msg.initiatorId + ", but should become the coordinator! Removing it from the election candidates.");
+                                         super.debug("Replica " + this.next +
+                                                             " didn't ACK the election initiated by " +
+                                                             msg.initiatorId +
+                                                             ", but should become the coordinator! Removing it from the election candidates.");
                                          // The elected replica crashed before becoming coordinator
                                          this.next = (this.next + 1) % this.replicas.size();
                                          HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>(
@@ -744,7 +768,10 @@ public class Replica extends AbstractReplica {
                                          // Check if new winner is itself or should forward
                                          this.evaluateCompleteElection(newElectionMsg);
                                      } else {
-                                         super.debug("Replica " + this.next + " didn't ACK the complete initiated started by " + msg.initiatorId + ", forwarding to the next one in the ring.");
+                                         super.debug("Replica " + this.next +
+                                                             " didn't ACK the complete initiated started by " +
+                                                             msg.initiatorId +
+                                                             ", forwarding to the next one in the ring.");
                                          // The next replica crashed, so the message must be sent to the following one in the ring
                                          this.next = (this.next + 1) % this.replicas.size();
                                          this.sendCompleteElectionMsg(msg);
@@ -812,8 +839,11 @@ public class Replica extends AbstractReplica {
         this.heartBeatReceived = false;
         this.heartBeatTimer = getContext().system()
                                           .scheduler()
-                                          .scheduleWithFixedDelay(Duration.ofMillis(AbstractReplica.COORDINATOR_BEAT_INTERVAL / 2),
-                                                                  Duration.ofMillis(AbstractReplica.COORDINATOR_BEAT_INTERVAL + super.getMaxLatencyPlusTolerance()),
+                                          .scheduleWithFixedDelay(Duration.ofMillis(
+                                                                          AbstractReplica.COORDINATOR_BEAT_INTERVAL / 2),
+                                                                  Duration.ofMillis(
+                                                                          AbstractReplica.COORDINATOR_BEAT_INTERVAL +
+                                                                                  super.getMaxLatencyPlusTolerance()),
                                                                   getSelf(),
                                                                   new CSHeartBeatCheck(),
                                                                   getContext().system()

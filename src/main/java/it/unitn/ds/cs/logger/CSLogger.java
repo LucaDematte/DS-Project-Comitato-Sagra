@@ -125,4 +125,29 @@ public class CSLogger {
             return Collections.max(this.keyToUUIDBindings.keySet());
         }
     }
+    
+    @Override
+    public String toString() {
+        StringBuilder rtn = new StringBuilder();
+        for (var update : updates.entrySet()) {
+            if (keyToUUIDBindings.containsValue(update.getKey())) {
+                var binding = keyToUUIDBindings.entrySet()
+                                               .stream()
+                                               .filter((b) -> b.getValue() == update.getKey())
+                                               .findFirst()
+                                               .orElseThrow();
+                rtn.append(binding.getKey());
+            } else {
+                rtn.append("????");
+            }
+            
+            rtn.append(": P[")
+               .append(update.getValue().index)
+               .append("] = ")
+               .append(update.getValue().value)
+               .append(", ");
+        }
+        
+        return rtn.toString();
+    }
 }

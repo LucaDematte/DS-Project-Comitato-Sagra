@@ -48,11 +48,15 @@ public class Main {
         
         client1.tell(new AbstractClient.ReadRequest(0), ActorRef.noSender());
         System.in.read();
-        replicas.get(0)
-                .tell(new AbstractReplica.Crash(AbstractReplica.Crash.Type.Now, 0),
-                      ActorRef.noSender()
-                );
+//        replicas.get(0)
+//                .tell(new AbstractReplica.Crash(AbstractReplica.Crash.Type.Now, 0),
+//                      ActorRef.noSender()
+//                );
+        client1.tell(new AbstractClient.WriteRequest(0, 10, replicas.get(1)), ActorRef.noSender());
         client1.tell(new AbstractClient.WriteRequest(0, 20, replicas.get(1)), ActorRef.noSender());
+        client1.tell(new AbstractClient.WriteRequest(0, 30, replicas.get(1)), ActorRef.noSender());
+        client1.tell(new AbstractClient.WriteRequest(0, 40, replicas.get(1)), ActorRef.noSender());
+        client1.tell(new AbstractClient.WriteRequest(0, 50, replicas.get(1)), ActorRef.noSender());
 
 
 //        System.in.read();
