@@ -22,7 +22,6 @@ import java.time.Duration;
 import java.util.*;
 import java.util.function.Supplier;
 
-// TODO aumentare epoch dopo elezione L
 // TODO aggiornare le repliche dopo elezione L
 // TODO aggiungere timeout nelle repliche tra update e writeok (con ask) E
 // TODO documentazione
@@ -732,6 +731,14 @@ public class Replica extends AbstractReplica {
             callbackOnCoordinatorElected(this.id);
             
             this.becomeCoordinator();
+            
+            // Setting the starting update key with epoch increased
+            int previousEpoch = msg.lastUpdates.entrySet()
+                                               .stream()
+                                               .max(Map.Entry.comparingByValue())
+                                               .orElseThrow()
+                                               .getValue().epoch;
+            this.updateKey = new CSUpdateKey(previousEpoch + 1, 0);
             
             this.synchronizeAndUpdate();
         } else {
