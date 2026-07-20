@@ -3,10 +3,8 @@ package it.unitn.ds.cs.logger;
 import it.unitn.ds.cs.CSUpdateData;
 import it.unitn.ds.cs.CSUpdateKey;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * This class can be used by replicas to keep a history of the updates they completed or that still
@@ -23,11 +21,6 @@ public class CSLogger {
     private final Map<CSUpdateKey, UUID> keyToUUIDBindings = new HashMap<>();
     /** Map that keeps the history of updates, identifying them with UUIDs. */
     private final Map<UUID, CSUpdateData> updates = new HashMap<>();
-    /**
-     * Map that stores additional information about the client which requested the update and the
-     * replica it contacted.
-     */
-    private final Map<UUID, CSClientData> uuidToClientBindings = new HashMap<>();
     
     /**
      * This method adds a new update request to the history.
@@ -39,12 +32,9 @@ public class CSLogger {
      * @param update           The data about the update request.
      * @param clientData       The data about the client that issued the request.
      */
-    public void logRequest(UUID writeRequestUUID, CSUpdateData update, CSClientData clientData) {
+    public void logRequest(UUID writeRequestUUID, CSUpdateData update) {
         if (!this.updates.containsKey(writeRequestUUID)) {
             this.updates.put(writeRequestUUID, update);
-        }
-        if (!this.uuidToClientBindings.containsKey(writeRequestUUID)) {
-            this.uuidToClientBindings.put(writeRequestUUID, clientData);
         }
     }
     
@@ -83,24 +73,17 @@ public class CSLogger {
         return this.updates.get(this.keyToUUIDBindings.get(key));
     }
     
-    /**
-     * Retrieves the client data of an update from the history given an update key.
-     *
-     * @param key The update key.
-     * @return The client data associated with the given update key.
-     */
-    public CSClientData getClientData(CSUpdateKey key) {
-        return this.uuidToClientBindings.get(this.keyToUUIDBindings.get(key));
+    public CSUpdateKey getUpdateKey(UUID uuid) {
+        return this.keyToUUIDBindings.entrySet()
+                                     .stream()
+                                     .filter(entry -> entry.getValue().equals(uuid))
+                                     .findFirst()
+                                     .orElseThrow()
+                                     .getKey();
     }
     
-    /**
-     * Checks if some client data is associated to the give update key.
-     *
-     * @param key The update key.
-     * @return Whether the client data is present or not.
-     */
-    public boolean containsClientData(CSUpdateKey key) {
-        return this.uuidToClientBindings.containsKey(this.keyToUUIDBindings.get(key));
+    public UUID getUUID(CSUpdateKey key) {
+        return this.keyToUUIDBindings.get(key);
     }
     
     /**
@@ -113,7 +96,7 @@ public class CSLogger {
     public void setCompleted(CSUpdateKey key) {
         var old = this.updates.get(this.keyToUUIDBindings.get(key));
         this.updates.replace(this.keyToUUIDBindings.get(key),
-                             new CSUpdateData(old.index, old.value, true)
+                             new CSUpdateData(old.index, old.value, true, old.clientData)
         );
     }
     
@@ -124,6 +107,37 @@ public class CSLogger {
         } else {
             return Collections.max(this.keyToUUIDBindings.keySet());
         }
+    }
+    
+    public CSUpdateKey getLastCompleteUpdateKey() {
+        Set<CSUpdateKey> keys = this.keyToUUIDBindings.keySet()
+                                                      .stream()
+                                                      .filter(key -> this.updates.get(this.keyToUUIDBindings.get(
+                                                              key)).completed)
+                                                      .collect(Collectors.toSet());
+        if (keys.isEmpty()) {
+            // If the replica doesn't have any update, return an update key that is "before" the first update
+            return new CSUpdateKey(-1, -1);
+        } else {
+            return Collections.max(keys);
+        }
+    }
+    
+    public List<CSUpdateKey> getUpdateKeysAfter(CSUpdateKey key) {
+        List<CSUpdateKey> keyList = new ArrayList<>(this.keyToUUIDBindings.keySet()
+                                                                          .stream()
+                                                                          .filter(k -> k.compareTo(
+                                                                                  key) > 0)
+                                                                          .toList());
+        Collections.sort(keyList);
+        return keyList;
+    }
+    
+    public List<Map.Entry<UUID, CSUpdateData>> getIncompleteUpdates() {
+        return this.updates.entrySet()
+                           .stream()
+                           .filter(entry -> !entry.getValue().completed)
+                           .toList();
     }
     
     @Override

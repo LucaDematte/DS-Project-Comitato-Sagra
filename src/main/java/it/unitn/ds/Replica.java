@@ -22,7 +22,7 @@ import java.time.Duration;
 import java.util.*;
 import java.util.function.Supplier;
 
-// TODO aggiornare le repliche dopo elezione L
+// TODO dopo l'elezione inoltrare gli update ricevuti durante l'elezione al nuovo coordinatore
 // TODO aggiungere timeout nelle repliche tra update e writeok (con ask) E
 // TODO documentazione
 // TODO implementare heartbeat con ask E
@@ -209,8 +209,7 @@ public class Replica extends AbstractReplica {
         // The update is logged in the local update list of the replica
         var clientData = new CSClientData(getSender(), this.id, msg.askUUID);
         this.logger.logRequest(writeRequestUUID,
-                               new CSUpdateData(msg.index, msg.value, false),
-                               clientData
+                               new CSUpdateData(msg.index, msg.value, false, clientData)
         );
         
         super.debug(
@@ -258,15 +257,14 @@ public class Replica extends AbstractReplica {
         // The update is logged in the local update list of the coordinator
         var clientData = new CSClientData(getSender(), this.id, msg.askUUID);
         this.logger.logRequest(writeRequestUUID,
-                               new CSUpdateData(msg.index, msg.value, false),
-                               clientData
+                               new CSUpdateData(msg.index, msg.value, false, clientData)
         );
         
         super.debug(
                 "Received write request from client " + getSender().path().name() + " with uuid " +
                         writeRequestUUID.toString().substring(0, 8));
         
-        this.update(new CSWriteForward(msg, writeRequestUUID, clientData));
+        this.updateNew(new CSWriteForward(msg, writeRequestUUID, clientData));
     }
     
     /**
@@ -278,43 +276,23 @@ public class Replica extends AbstractReplica {
     private void handleWriteForward(CSWriteForward msg) {
         super.debug("Received forwarded request with uuid " +
                             msg.writeRequestUUID.toString().substring(0, 8));
-        this.update(msg);
+        this.updateNew(msg);
     }
     
     // =================================================================================
     // Update Protocol
     // =================================================================================
     
-    /**
-     * This method processes one update by following the specification of the update protocol.
-     * A new UPDATE message ({@link CSUpdate}) with an update key is sent to all replicas so that
-     * they get to know the update data.
-     * Inside this method it is also defined the behavior of the coordinator when it receives an ACK
-     * for the UPDATE message (inside a lambda).
-     *
-     * @param msg The data of the update to be processed.
-     */
-    private void update(CSWriteForward msg) {
-        // Deep copy to avoid working on actor state
-        CSUpdateKey updateKey = new CSUpdateKey(this.updateKey);
-        
-        super.debug("Sending update (P[" + msg.request.index + "] = " + msg.request.value +
-                            " to replicas (key: " + updateKey + ", uuid: " +
-                            msg.writeRequestUUID.toString().substring(0, 8) + ")");
-        
-        
-        // The coordinator logs the update in its local update list
-        CSUpdateData data = new CSUpdateData(msg.request.index, msg.request.value, false);
-        this.logger.logUpdate(updateKey, msg.writeRequestUUID, data);
-        this.logger.logRequest(msg.writeRequestUUID, data, msg.clientData);
-        
+    
+    private void updateWithKey(
+            CSUpdateKey updateKey, CSUpdateData data, UUID writeRequestUUID, UUID askUUID) {
         // The number of received ACKs for this update is initialized
         this.receivedAcks.put(updateKey, 1); // coordinator immediately acks to itself
         
         // This map contains all the replicas that don't already know the existence of this update
         var otherReplicas = new HashMap<>(this.replicas);
         otherReplicas.remove(this.coordinatorId); // same as this.id because update is executed only by the coordinator
-        otherReplicas.remove(msg.clientData.contactedReplicaId);
+        otherReplicas.remove(data.clientData.contactedReplicaId);
         
         Duration timeout = Duration.ofMillis((long) super.getMaxLatencyPlusTolerance() * 3);
         
@@ -328,7 +306,6 @@ public class Replica extends AbstractReplica {
                         this.replicas.size() / 2 + 1) { // happens only once because of ==
                     super.debug(
                             "Quorum reached for update " + updateKey + ", adding update to queue");
-                    //this.queue.add(updateKey);
                     
                     this.sendWriteOk(updateKey);
                 }
@@ -381,31 +358,67 @@ public class Replica extends AbstractReplica {
         // The coordinator sends the UPDATE message to the replica which forwarded the request
         // note: coordinator never sends messages to itself
         // always handles updates by managing internal state
-        if (this.coordinatorId != msg.clientData.contactedReplicaId) {
+        if (this.coordinatorId != data.clientData.contactedReplicaId) {
             super.debug(
                     "Sending update " + updateKey + " to the replica which forwarded the request");
-            askSystem.<CSAck>ask(new CSUpdate(updateKey, data, msg.writeRequestUUID, msg.askUUID),
-                                 this.replicas.get(msg.clientData.contactedReplicaId),
-                                 timeout,
-                                 (res, timedOut) -> {
-                                     handler.handle(msg.clientData.contactedReplicaId,
-                                                    res,
-                                                    timedOut
-                                     );
-                                 }
-            );
-            
-            if (this.crashSystem.shouldCrashAfterThisUpdate()) {
-                this.becomeCrashed();
+            ActorRef contactedReplica = this.replicas.get(data.clientData.contactedReplicaId);
+            if (contactedReplica != null) {
+                askSystem.<CSAck>ask(new CSUpdate(updateKey, data, writeRequestUUID, askUUID),
+                                     contactedReplica,
+                                     timeout,
+                                     (res, timedOut) -> {
+                                         handler.handle(data.clientData.contactedReplicaId,
+                                                        res,
+                                                        timedOut
+                                         );
+                                     }
+                );
+                
+                if (this.crashSystem.shouldCrashAfterThisUpdate()) {
+                    this.becomeCrashed();
+                }
             }
         }
         
         // The coordinator sends the UPDATE message to all other replicas
         this.multicast(otherReplicas,
-                       () -> new CSUpdate(updateKey, data, msg.writeRequestUUID),
+                       () -> new CSUpdate(updateKey, data, writeRequestUUID),
                        timeout,
                        handler
         );
+        
+    }
+    
+    /**
+     * This method processes one update by following the specification of the update protocol.
+     * A new UPDATE message ({@link CSUpdate}) with an update key is sent to all replicas so that
+     * they get to know the update data.
+     * Inside this method it is also defined the behavior of the coordinator when it receives an ACK
+     * for the UPDATE message (inside a lambda).
+     *
+     * @param msg The data of the update to be processed.
+     */
+    private void updateNew(CSWriteForward msg) {
+        // Deep copy to avoid working on actor state
+        CSUpdateKey updateKey = new CSUpdateKey(this.updateKey);
+        
+        super.debug("Sending update (P[" + msg.request.index + "] = " + msg.request.value +
+                            " to replicas (key: " + updateKey + ", uuid: " +
+                            msg.writeRequestUUID.toString().substring(0, 8) + ")");
+        
+        
+        // The coordinator logs the update in its local update list
+        CSUpdateData data = new CSUpdateData(msg.request.index,
+                                             msg.request.value,
+                                             false,
+                                             msg.clientData
+        );
+        UUID writeRequestUUID = msg.writeRequestUUID;
+        UUID askUUID = msg.askUUID;
+        this.logger.logUpdate(updateKey, writeRequestUUID, data);
+        this.logger.logRequest(writeRequestUUID, data);
+        
+        this.updateWithKey(updateKey, data, writeRequestUUID, askUUID);
         
         // The key to be assigned to the next update is saved
         this.updateKey = new CSUpdateKey(this.updateKey.epoch, this.updateKey.seq_no + 1);
@@ -420,8 +433,13 @@ public class Replica extends AbstractReplica {
     private void handleUpdate(CSUpdate msg) {
         super.debug("Received Update with key:" + msg.key);
         this.askSystem.handleResponse(msg);     // Needed for the replica that forwarded the update to the coordinator
-        // The replica logs the update in its local update list and sends an ACK back to the coordinator
-        this.logger.logUpdate(msg.key, msg.writeRequestUUID, msg.data);
+        CSUpdateData data = this.logger.getUpdateData(msg.key);
+        if (data != null && data.completed) {
+            super.debug("I already applied this update, I'll just ACK the sender");
+        } else {
+            // The replica logs the update in its local update list and sends an ACK back to the coordinator
+            this.logger.logUpdate(msg.key, msg.writeRequestUUID, msg.data);
+        }
         super.tell(new CSAck(msg.askUUID), getSender());
     }
     
@@ -431,26 +449,19 @@ public class Replica extends AbstractReplica {
      * It ensures that WriteOks are sent for only one update at a time.
      */
     private void sendWriteOk(CSUpdateKey key) {
-//        if (!this.processing) {
-//            if (!this.queue.isEmpty()) {
-//                this.processing = true;
-        //CSUpdateKey current = this.queue.poll();
         super.debug("Sending WriteOks for update " + key);
         
         broadcast(new CSWriteOk(key));
         
         //super.debug("Status of update logger: " + this.logger);
         
-        this.completeUpdate(key);
-        this.sendWriteResult(key);
-//                this.processing = false;
-//                this.sendWriteOk(); // continue processing other updates until the queue is empty
-//            } else {
-//                super.debug("No more updates in queue for WriteOks");
-//            }
-//        } else {
-//            super.debug("Already sending WriteOks for an update");
-//        }
+        CSUpdateData data = this.logger.getUpdateData(key);
+        if (data != null && data.completed) {
+            super.debug("I already applied this update, no need to reapply it again");
+        } else {
+            this.completeUpdate(key);
+            this.sendWriteResult(key);
+        }
     }
     
     /**
@@ -462,8 +473,13 @@ public class Replica extends AbstractReplica {
     public final void handleWriteOk(CSWriteOk msg) {
         super.debug("Received WriteOk with key: " + msg.key);
         
-        this.completeUpdate(msg.key);
-        this.sendWriteResult(msg.key);
+        CSUpdateData data = this.logger.getUpdateData(msg.key);
+        if (data != null && data.completed) {
+            super.debug("I already applied this update, no need to reapply it again");
+        } else {
+            this.completeUpdate(msg.key);
+            this.sendWriteResult(msg.key);
+        }
     }
     
     /**
@@ -491,24 +507,22 @@ public class Replica extends AbstractReplica {
      */
     public void sendWriteResult(CSUpdateKey key) {
         CSUpdateData update = this.logger.getUpdateData(key);
+        CSClientData clientData = update.clientData;
         
-        if (this.logger.containsClientData(key)) {
-            var clientData = this.logger.getClientData(key);
-            if (this.id == clientData.contactedReplicaId) {
-                super.debug("Sending WriteResult for " + key + " to client " +
-                                    clientData.actor.path().name() + " (askUUID: " +
-                                    clientData.askUUID + ")");
-                super.tell(new CSWriteResult(update.index,
-                                             update.value,
-                                             true,
-                                             this.id,
-                                             clientData.askUUID
-                           ), clientData.actor
-                );
-            } else {
-                super.debug("I'm not the original handler of update " + key +
-                                    ", no need to send result to any client");
-            }
+        if (this.id == clientData.contactedReplicaId) {
+            super.debug("Sending WriteResult for " + key + " to client " +
+                                clientData.actor.path().name() + " (askUUID: " +
+                                clientData.askUUID + ")");
+            super.tell(new CSWriteResult(update.index,
+                                         update.value,
+                                         true,
+                                         this.id,
+                                         clientData.askUUID
+                       ), clientData.actor
+            );
+        } else {
+            super.debug("I'm not the original handler of update " + key +
+                                ", no need to send result to any client");
         }
     }
     
@@ -524,8 +538,8 @@ public class Replica extends AbstractReplica {
      */
     private void handleHeartBeatCoordinator(CSHeartBeatFromCoordinator msg) {
         this.broadcast(new CSHeartBeatFromCoordinator());
-        
-        //super.debug("Coordinator HeartBeat");
+
+//        super.debug("Coordinator HeartBeat");
     }
     
     /**
@@ -540,8 +554,8 @@ public class Replica extends AbstractReplica {
      */
     private void handleHeartBeatFromCoordinator(CSHeartBeatFromCoordinator msg) {
         this.heartBeatReceived = true;
-        
-        //super.debug("Received Coordinator HeartBeat");
+
+//        super.debug("Received Coordinator HeartBeat, setting flag to true");
         
         if (this.crashSystem.shouldCrashAfterThisHeartBeat()) {
             this.becomeCrashed();
@@ -664,11 +678,6 @@ public class Replica extends AbstractReplica {
     
     public void startElection() {
         if (!electing) {
-            if (this.heartBeatTimer != null) {
-                this.heartBeatTimer.cancel();
-                this.heartBeatTimer = null;
-            }
-            
             this.becomeElector();
             callbackOnElectionStarted(this.coordinatorId);
             
@@ -682,7 +691,13 @@ public class Replica extends AbstractReplica {
             
             HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>();
             lastUpdates.put(this.id, this.logger.getLastUpdateKey());
-            CSElection electionMsg = new CSElection(lastUpdates, this.id, this.coordinatorId);
+            HashMap<Integer, CSUpdateKey> lastCompleteUpdates = new HashMap<>();
+            lastCompleteUpdates.put(this.id, this.logger.getLastCompleteUpdateKey());
+            CSElection electionMsg = new CSElection(lastUpdates,
+                                                    lastCompleteUpdates,
+                                                    this.id,
+                                                    this.coordinatorId
+            );
             
             this.electionInitiatorId = this.id;
             
@@ -745,7 +760,10 @@ public class Replica extends AbstractReplica {
                 // The election message must complete the ring
                 HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>(msg.lastUpdates);
                 lastUpdates.put(this.id, this.logger.getLastUpdateKey());
+                HashMap<Integer, CSUpdateKey> lastCompleteUpdates = new HashMap<>(msg.lastCompleteUpdates);
+                lastCompleteUpdates.put(this.id, this.logger.getLastCompleteUpdateKey());
                 CSElection electionMsg = new CSElection(lastUpdates,
+                                                        lastCompleteUpdates,
                                                         msg.initiatorId,
                                                         msg.crashedCoordinatorId
                 );
@@ -785,7 +803,7 @@ public class Replica extends AbstractReplica {
                                                .getValue().epoch;
             this.updateKey = new CSUpdateKey(previousEpoch + 1, 0);
             
-            this.synchronizeAndUpdate();
+            this.synchronizeAndUpdate(msg.lastCompleteUpdates);
         } else {
             this.sendCompleteElectionMsg(msg);
         }
@@ -814,7 +832,11 @@ public class Replica extends AbstractReplica {
                                          HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>(
                                                  msg.lastUpdates);
                                          lastUpdates.remove(electionWinner);
+                                         HashMap<Integer, CSUpdateKey> lastCompleteUpdates = new HashMap<>(
+                                                 msg.lastCompleteUpdates);
+                                         lastCompleteUpdates.remove(electionWinner);
                                          CSElection newElectionMsg = new CSElection(lastUpdates,
+                                                                                    lastCompleteUpdates,
                                                                                     msg.initiatorId,
                                                                                     msg.crashedCoordinatorId
                                          );
@@ -837,10 +859,24 @@ public class Replica extends AbstractReplica {
         );
     }
     
-    public void synchronizeAndUpdate() {
+    public void synchronizeAndUpdate(Map<Integer, CSUpdateKey> lastCompleteUpdates) {
         super.debug("Sending synchronization message to replicas");
         
         this.broadcast(new CSSynchronization(this.id));
+        
+        List<CSUpdateKey> incompleteUpdateKey = this.logger.getUpdateKeysAfter(Collections.min(
+                lastCompleteUpdates.values()));
+        
+        for (var key : incompleteUpdateKey) {
+            super.debug("Bringing replicas up-to-date for update " + key);
+            
+            // askUUID is not needed in this case, so it can be set to a dummy object
+            this.updateWithKey(key,
+                               this.logger.getUpdateData(key),
+                               this.logger.getUUID(key),
+                               UUID.randomUUID()
+            );
+        }
     }
     
     /**
@@ -871,6 +907,10 @@ public class Replica extends AbstractReplica {
     private void becomeElector() {
         // Remove callbacks from previous state
         this.askSystem.cancelAllCallbacks();
+        if (this.heartBeatTimer != null) {
+            this.heartBeatTimer.cancel();
+            this.heartBeatTimer = null;
+        }
         getContext().become(elector());
         this.electing = true;
     }
