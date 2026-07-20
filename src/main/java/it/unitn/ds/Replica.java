@@ -26,7 +26,6 @@ import java.util.function.Supplier;
 // TODO aggiungere timeout nelle repliche tra update e writeok (con ask) E
 // TODO documentazione
 // TODO implementare heartbeat con ask E
-// TODO togliere repliche crashate (e cambiare next e previous) da lista this.replicas (e gestire i messaggi CrashNotice) L
 
 public class Replica extends AbstractReplica {
     /**
@@ -222,7 +221,7 @@ public class Replica extends AbstractReplica {
         // The request is forwarded to the coordinator
         // super.getMaxLatencyPlusTolerance() * this.replicas.size()
         //Duration timeout = Duration.ofMillis(2L * super.getMaxLatencyPlusTolerance());
-        Duration timeout = Duration.ofMillis((long) super.getMaxLatencyPlusTolerance() * 3);
+        Duration timeout = Duration.ofMillis((long) super.getMaxLatencyPlusTolerance() * 4);
         askSystem.<CSUpdate>ask(new CSWriteForward(msg, writeRequestUUID, clientData),
                                 replicas.get(this.coordinatorId),
                                 timeout,
@@ -334,35 +333,48 @@ public class Replica extends AbstractReplica {
                     this.sendWriteOk(updateKey);
                 }
             } else {
-                int crashed_replica_id = replicaId;
+                int crashedReplicaId = replicaId;
                 
-                super.debug("Replica " + crashed_replica_id + " didn't ACK update " + updateKey +
-                                    " in time, must have crashed! Sending notices to replicas");
+                super.debug("Replica " + crashedReplicaId + " didn't ACK update " + updateKey +
+                                    " in time, must have crashed!");
                 
-                this.replicas.remove(crashed_replica_id);
+                this.replicas.remove(crashedReplicaId);
                 
-                int previous_replica_id = this.replicas.keySet()
-                                                       .stream()
-                                                       .filter(id -> id < crashed_replica_id)
-                                                       .max(Integer::compare)
-                                                       .orElse(Collections.min(this.replicas.keySet()));
-                int next_replica_id = this.replicas.keySet()
-                                                   .stream()
-                                                   .filter(id -> id > crashed_replica_id)
-                                                   .min(Integer::compare)
-                                                   .orElse(Collections.max(this.replicas.keySet()));
-                this.replicas.get(previous_replica_id)
-                             .tell(new CSCrashNotice(crashed_replica_id,
-                                                     previous_replica_id,
-                                                     next_replica_id
-                                   ), getSelf()
-                             );
-                this.replicas.get(next_replica_id)
-                             .tell(new CSCrashNotice(crashed_replica_id,
-                                                     previous_replica_id,
-                                                     next_replica_id
-                                   ), getSelf()
-                             );
+                // Calculate the two replicas that need to update their pointers
+                int previousReplicaId = this.getPreviousOf(crashedReplicaId);
+                int nextReplicaId = this.getNextOf(crashedReplicaId);
+                
+                if (this.id == previousReplicaId) {
+                    // If the coordinator is the replica before the one which crashed, it updates the next pointer
+                    super.debug(
+                            "I'm the replica before the one which crashed! Updating next pointer to " +
+                                    nextReplicaId);
+                    this.next = nextReplicaId;
+                } else {
+                    // Otherwise it sends a crash notice to the replica before the one which crashed
+                    this.replicas.get(previousReplicaId)
+                                 .tell(new CSCrashNotice(crashedReplicaId,
+                                                         previousReplicaId,
+                                                         nextReplicaId
+                                       ), getSelf()
+                                 );
+                }
+                
+                if (this.id == nextReplicaId) {
+                    // If the coordinator is the replica after the one which crashed, it updates the previous pointer
+                    super.debug(
+                            "I'm the replica after the one which crashed! Updating previous pointer to " +
+                                    previousReplicaId);
+                    this.previous = previousReplicaId;
+                } else {
+                    // Otherwise it sends a crash notice to the replica after the one which crashed
+                    this.replicas.get(nextReplicaId)
+                                 .tell(new CSCrashNotice(crashedReplicaId,
+                                                         previousReplicaId,
+                                                         nextReplicaId
+                                       ), getSelf()
+                                 );
+                }
             }
         };
         
@@ -606,6 +618,22 @@ public class Replica extends AbstractReplica {
         }
     }
     
+    private int getPreviousOf(int replicaId) {
+        return this.replicas.keySet()
+                            .stream()
+                            .filter(id -> id < replicaId)
+                            .max(Integer::compare)
+                            .orElse(Collections.min(this.replicas.keySet()));
+    }
+    
+    private int getNextOf(int replicaId) {
+        return this.replicas.keySet()
+                            .stream()
+                            .filter(id -> id > replicaId)
+                            .min(Integer::compare)
+                            .orElse(Collections.max(this.replicas.keySet()));
+    }
+    
     /**
      * Handler used by normal replicas to update the {@code next} and {@code previous} references
      * for the ring topology used during election.
@@ -615,9 +643,17 @@ public class Replica extends AbstractReplica {
      *            replicas.
      */
     public final void handleCrashNotice(CSCrashNotice msg) {
-        if (this.id < msg.crashed_id) {
+        super.debug("Received crash notice. Replica " + msg.crashed_id + " crashed.");
+        
+        if (this.id == msg.previous) {
+            // If this is the replica before the one which crashed, it updates the next pointer
+            super.debug("Updating next pointer to " + msg.next);
             this.next = msg.next;
-        } else {
+        }
+        
+        if (this.id == msg.next) {
+            // If this is the replica after the one which crashed, it updates the previous pointer
+            super.debug("Updating previous pointer to " + msg.previous);
             this.previous = msg.previous;
         }
     }
@@ -636,6 +672,14 @@ public class Replica extends AbstractReplica {
             this.becomeElector();
             callbackOnElectionStarted(this.coordinatorId);
             
+            this.replicas.remove(this.coordinatorId);
+            if (this.next == this.coordinatorId) {
+                this.next = this.getNextOf(this.next);
+            }
+            if (this.previous == this.coordinatorId) {
+                this.previous = this.getPreviousOf(this.previous);
+            }
+            
             HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>();
             lastUpdates.put(this.id, this.logger.getLastUpdateKey());
             CSElection electionMsg = new CSElection(lastUpdates, this.id, this.coordinatorId);
@@ -650,7 +694,7 @@ public class Replica extends AbstractReplica {
         super.debug("Forwarding incomplete election message started by " + msg.initiatorId +
                             " to replica " + this.next);
         
-        Duration timeout = Duration.ofMillis(super.getMaxLatency());
+        Duration timeout = Duration.ofMillis(2L * super.getMaxLatencyPlusTolerance());
         askSystem.<CSAck>ask(new CSElection(msg),
                              replicas.get(this.next),
                              timeout,
@@ -661,7 +705,8 @@ public class Replica extends AbstractReplica {
                                                          msg.initiatorId +
                                                          ", forwarding to the next one in the ring.");
                                      // The next replica crashed, so the message must be sent to the following one in the ring
-                                     this.next = (this.next + 1) % this.replicas.size();
+                                     this.replicas.remove(this.next);
+                                     this.next = this.getNextOf(this.next);
                                      this.sendIncompleteElectionMsg(msg);
                                  } else {
                                      // If the ACK is received as expected, the replica just needs to wait for the election message to come back
@@ -750,7 +795,7 @@ public class Replica extends AbstractReplica {
         super.debug("Forwarding complete election message initiated by " + msg.initiatorId +
                             " to replica " + this.next);
         
-        Duration timeout = Duration.ofMillis(super.getMaxLatency());
+        Duration timeout = Duration.ofMillis(2L * super.getMaxLatencyPlusTolerance());
         askSystem.<CSAck>ask(new CSElection(msg),
                              replicas.get(this.next),
                              timeout,
@@ -764,7 +809,8 @@ public class Replica extends AbstractReplica {
                                                              msg.initiatorId +
                                                              ", but should become the coordinator! Removing it from the election candidates.");
                                          // The elected replica crashed before becoming coordinator
-                                         this.next = (this.next + 1) % this.replicas.size();
+                                         this.replicas.remove(this.next);
+                                         this.next = this.getNextOf(this.next);
                                          HashMap<Integer, CSUpdateKey> lastUpdates = new HashMap<>(
                                                  msg.lastUpdates);
                                          lastUpdates.remove(electionWinner);
@@ -780,7 +826,8 @@ public class Replica extends AbstractReplica {
                                                              msg.initiatorId +
                                                              ", forwarding to the next one in the ring.");
                                          // The next replica crashed, so the message must be sent to the following one in the ring
-                                         this.next = (this.next + 1) % this.replicas.size();
+                                         this.replicas.remove(this.next);
+                                         this.next = this.getNextOf(this.next);
                                          this.sendCompleteElectionMsg(msg);
                                      }
                                  } else {
@@ -840,6 +887,12 @@ public class Replica extends AbstractReplica {
     }
     
     private void becomeReplica() {
+        // Reset variables used for election
+        this.electing = false;
+        this.electionInitiatorId = -1;
+        // Remove callbacks from previous state
+        this.askSystem.cancelAllCallbacks();
+        
         getContext().become(createReceive());
         
         // Setting up heartbeat system
