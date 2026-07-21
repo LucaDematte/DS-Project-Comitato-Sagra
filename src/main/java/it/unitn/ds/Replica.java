@@ -76,7 +76,6 @@ public class Replica extends AbstractReplica {
     
     /** The next update key to be assigned at a new update. */
     CSUpdateKey updateKey = new CSUpdateKey(0, 0);
-    ;
     /**
      * Maps update keys to the number of ACKs received.
      * The coordinator must increment the value in this map whenever an ACK for an update is
@@ -413,13 +412,13 @@ public class Replica extends AbstractReplica {
         if (this.logger.isUpdateCompleted(msg.key)) {
             super.debug("I already applied this update, I'll just ACK the sender");
         } else {
-            // The replica needs to save the askUUID related to this update
-            // It is later used when handling the WriteOk message to run the lambda correctly
-            this.updatesAskUUIDs.put(msg.key, msg.askUUID);
             // The replica logs the update in its local update list and sends an ACK back to the coordinator
             this.logger.logUpdate(msg.key, msg.writeRequestUUID, msg.data);
         }
         
+        // The replica needs to save the askUUID related to this update
+        // It is later used when handling the WriteOk message to run the lambda correctly
+        this.updatesAskUUIDs.put(msg.key, msg.askUUID);
         this.askSystem.<CSWriteOk>ask(new CSAck(msg.askUUID),
                                       getSender(),
                                       this.defaultTimeout,
@@ -433,7 +432,7 @@ public class Replica extends AbstractReplica {
                                                           "I already applied this update, no need to reapply it again");
                                               }
                                           } else {
-                                              if (!this.logger.isUpdateCompleted(res.key)) {
+                                              if (!this.logger.isUpdateCompleted(msg.key)) {
                                                   this.startElection();
                                               }
                                           }
@@ -609,10 +608,10 @@ public class Replica extends AbstractReplica {
      */
     private boolean checkForCrashAfterSendingMsg(Serializable msg) {
         switch (msg) {
-            case CSUpdate msg1 -> {
+            case CSUpdate m -> {
                 return this.crashSystem.shouldCrashAfterThisUpdate();
             }
-            case CSWriteOk msg1 -> {
+            case CSWriteOk m -> {
                 return this.crashSystem.shouldCrashAfterThisWriteOk();
             }
             default -> {
@@ -730,7 +729,6 @@ public class Replica extends AbstractReplica {
         if (msg.initiatorId < this.electionInitiatorId) {
             super.debug("Ignoring election initiated by " + msg.initiatorId +
                                 ", still tracking election from " + this.electionInitiatorId);
-            return;
         } else {
             if (!msg.lastUpdates.containsKey(this.id)) {
                 // The election message must complete the ring
