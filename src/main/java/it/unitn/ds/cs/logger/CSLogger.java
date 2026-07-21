@@ -12,7 +12,7 @@ import java.util.stream.Collectors;
  * <p>
  * Updates are identified in two ways: when a replica first receives the request from the client,
  * it stores it associated to a new {@link UUID}.
- * This {@link UUID} is propagated to the coordinator so that, when is sends the UPDATE message with
+ * This {@link UUID} is propagated to the coordinator so that, when it sends the UPDATE message with
  * the update key, the replica can also identify updates based on the update key.
  * </p>
  */
@@ -62,6 +62,15 @@ public class CSLogger {
         }
     }
     
+    public CSUpdateKey getUpdateKey(UUID uuid) {
+        return this.keyToUUIDBindings.entrySet()
+                                     .stream()
+                                     .filter(entry -> entry.getValue().equals(uuid))
+                                     .findFirst()
+                                     .orElseThrow()
+                                     .getKey();
+    }
+    
     /**
      * Retrieves an update from the history given an update key.
      *
@@ -70,15 +79,6 @@ public class CSLogger {
      */
     public CSUpdateData getUpdateData(CSUpdateKey key) {
         return this.updates.get(this.keyToUUIDBindings.get(key));
-    }
-    
-    public CSUpdateKey getUpdateKey(UUID uuid) {
-        return this.keyToUUIDBindings.entrySet()
-                                     .stream()
-                                     .filter(entry -> entry.getValue().equals(uuid))
-                                     .findFirst()
-                                     .orElseThrow()
-                                     .getKey();
     }
     
     public UUID getUUID(CSUpdateKey key) {
@@ -97,6 +97,17 @@ public class CSLogger {
         this.updates.replace(this.keyToUUIDBindings.get(key),
                              new CSUpdateData(old.index, old.value, true, old.clientData)
         );
+    }
+    
+    /**
+     * Check if an update associated to a key has been completed.
+     *
+     * @param key The update key.
+     * @return If the update is completed or not.
+     */
+    public boolean isUpdateCompleted(CSUpdateKey key) {
+        CSUpdateData data = this.updates.get(this.keyToUUIDBindings.get(key));
+        return (data != null && data.completed);
     }
     
     public CSUpdateKey getLastUpdateKey() {

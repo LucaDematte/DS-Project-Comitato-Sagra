@@ -135,6 +135,12 @@ public class CSAsk {
         this.pending.forEach((uuid, p) -> {
             p.timer.cancel();
         });
+        this.pending.clear();
+
+//        for (var p : this.pending.entrySet()) {
+//            p.getValue().timer.cancel();
+//            this.pending.remove(p.getKey());
+//        }
     }
     
     /**
