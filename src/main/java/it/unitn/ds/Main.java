@@ -25,9 +25,14 @@ public class Main {
         
         Map<Integer, ActorRef> replicas = new HashMap<>(N_REPLICAS);
         for (int i = 0; i < N_REPLICAS; i++) {
-            replicas.put(i, system.actorOf(
-                    Replica.props(i, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY,
-                            AbstractReplica.COORDINATOR_BEAT_INTERVAL), "Replica_" + i));
+            replicas.put(i,
+                         system.actorOf(Replica.props(i,
+                                                      AbstractReplica.MIN_LATENCY,
+                                                      AbstractReplica.MAX_LATENCY,
+                                                      AbstractReplica.COORDINATOR_BEAT_INTERVAL
+                                        ), "Replica_" + i
+                         )
+            );
         }
         
         InitSystem initMsg = new InitSystem(replicas, COORDINATOR_ID);
@@ -39,31 +44,38 @@ public class Main {
         ActorRef client1 = system.actorOf(Client.props(1000, 1000, Optional.of(replicas.get(0))));
         
         // TODO: Implement your main logic
-//        client1.tell(new AbstractClient.ReadRequest(0), ActorRef.noSender());
-        client1.tell(new AbstractClient.WriteRequest(0, 20, replicas.get(0)), ActorRef.noSender());
-        client1.tell(new AbstractClient.WriteRequest(0, 30, replicas.get(0)), ActorRef.noSender());
-        client1.tell(new AbstractClient.WriteRequest(0, 40, replicas.get(0)), ActorRef.noSender());
-        client1.tell(new AbstractClient.WriteRequest(0, 50, replicas.get(0)), ActorRef.noSender());
-        
+        client1.tell(new AbstractClient.ReadRequest(0), ActorRef.noSender());
         System.in.read();
         
-        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(0)), ActorRef.noSender());
-        
-        System.in.read();
-        
-        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(1)), ActorRef.noSender());
-        
-        System.in.read();
-        
-        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(2)), ActorRef.noSender());
-        
-        System.in.read();
-        
-        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(3)), ActorRef.noSender());
-        
-        System.in.read();
-        
-        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(4)), ActorRef.noSender());
+        replicas.get(0)
+                .tell(new AbstractReplica.Crash(AbstractReplica.Crash.Type.WriteOK, 0),
+                      ActorRef.noSender()
+                );
+        client1.tell(new AbstractClient.WriteRequest(0, 10, replicas.get(1)), ActorRef.noSender());
+//        client1.tell(new AbstractClient.WriteRequest(0, 20, replicas.get(1)), ActorRef.noSender());
+//        client1.tell(new AbstractClient.WriteRequest(0, 30, replicas.get(1)), ActorRef.noSender());
+//        client1.tell(new AbstractClient.WriteRequest(0, 40, replicas.get(1)), ActorRef.noSender());
+//        client1.tell(new AbstractClient.WriteRequest(0, 50, replicas.get(1)), ActorRef.noSender());
+
+//        System.in.read();
+//
+//        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(0)), ActorRef.noSender());
+//
+//        System.in.read();
+//
+//        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(1)), ActorRef.noSender());
+//
+//        System.in.read();
+//
+//        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(2)), ActorRef.noSender());
+//
+//        System.in.read();
+//
+//        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(3)), ActorRef.noSender());
+//
+//        System.in.read();
+//
+//        client1.tell(new AbstractClient.ReadRequest(0, replicas.get(4)), ActorRef.noSender());
         
         System.in.read();
         system.terminate();
