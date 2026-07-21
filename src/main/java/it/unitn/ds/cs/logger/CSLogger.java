@@ -30,7 +30,6 @@ public class CSLogger {
      * @param writeRequestUUID The {@link UUID} used by the replica to associate an update to the
      *                         update key chosen by the coordinator.
      * @param update           The data about the update request.
-     * @param clientData       The data about the client that issued the request.
      */
     public void logRequest(UUID writeRequestUUID, CSUpdateData update) {
         if (!this.updates.containsKey(writeRequestUUID)) {
@@ -133,10 +132,10 @@ public class CSLogger {
         return keyList;
     }
     
-    public List<Map.Entry<UUID, CSUpdateData>> getIncompleteUpdates() {
+    public List<Map.Entry<UUID, CSUpdateData>> getUpdatesWithoutKey() {
         return this.updates.entrySet()
                            .stream()
-                           .filter(entry -> !entry.getValue().completed)
+                           .filter(entry -> !this.keyToUUIDBindings.containsValue(entry.getKey()))
                            .toList();
     }
     

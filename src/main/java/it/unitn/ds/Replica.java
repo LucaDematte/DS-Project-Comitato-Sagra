@@ -22,7 +22,6 @@ import java.time.Duration;
 import java.util.*;
 import java.util.function.Supplier;
 
-// TODO dopo l'elezione inoltrare gli update ricevuti durante l'elezione al nuovo coordinatore
 // TODO aggiungere timeout nelle repliche tra update e writeok (con ask) E
 // TODO documentazione
 // TODO implementare heartbeat con ask E
@@ -85,13 +84,6 @@ public class Replica extends AbstractReplica {
      * received.
      */
     Map<CSUpdateKey, Integer> receivedAcks = new HashMap<>();
-    /**
-     * This queue stores the update operations where the coordinator still has to send WriteOk to
-     * replicas.
-     * The queue is of {@link CSUpdateKey} because the update information is not needed anymore,
-     * replicas already know what the update is about.
-     */
-    //Queue<CSUpdateKey> queue = new LinkedList<>();
     /**
      * Flag set to {@code true} while the coordinator is sending WriteOks for an update.
      * Used to prevent concurrent processing of multiple updates.
@@ -240,6 +232,25 @@ public class Replica extends AbstractReplica {
         );
     }
     
+    private void handleWriteRequestDuringElection(CSWriteRequest msg) {
+        // To let this replica know which update key will be assigned by the coordinator, a UUID is
+        // generated and appended to the request. The coordinator will send the UPDATE message
+        // containing both the update key and the UUID.
+        UUID writeRequestUUID = UUID.randomUUID();
+        
+        // The update is logged in the local update list of the replica
+        var clientData = new CSClientData(getSender(), this.id, msg.askUUID);
+        this.logger.logRequest(writeRequestUUID,
+                               new CSUpdateData(msg.index, msg.value, false, clientData)
+        );
+        
+        super.debug(
+                "Received write request during election from client " + getSender().path().name() +
+                        " with uuid " + writeRequestUUID.toString().substring(0, 8) +
+                        ", storing update locally until a coordinator is elected.");
+        
+    }
+    
     /**
      * Special handler for write requests sent directly to the coordinator.
      * The write request is processed with the update protocol so that the update is applied to all
@@ -304,8 +315,7 @@ public class Replica extends AbstractReplica {
                 // slash with integers always floor
                 if (this.receivedAcks.get(updateKey) ==
                         this.replicas.size() / 2 + 1) { // happens only once because of ==
-                    super.debug(
-                            "Quorum reached for update " + updateKey + ", adding update to queue");
+                    super.debug("Quorum reached for update " + updateKey + ", sending writeOks");
                     
                     this.sendWriteOk(updateKey);
                 }
@@ -867,6 +877,7 @@ public class Replica extends AbstractReplica {
         List<CSUpdateKey> incompleteUpdateKey = this.logger.getUpdateKeysAfter(Collections.min(
                 lastCompleteUpdates.values()));
         
+        // Propagating updates that already had an update key (assigned by the previous coordinator)
         for (var key : incompleteUpdateKey) {
             super.debug("Bringing replicas up-to-date for update " + key);
             
@@ -876,6 +887,26 @@ public class Replica extends AbstractReplica {
                                this.logger.getUUID(key),
                                UUID.randomUUID()
             );
+        }
+        
+        // Propagating updates that this replica stored locally during election
+        List<Map.Entry<UUID, CSUpdateData>> updates = this.logger.getUpdatesWithoutKey();
+        
+        for (var update : updates) {
+            // Assigning key to the update, storing it and propagating the update
+            CSUpdateKey updateKey = new CSUpdateKey(this.updateKey);
+            this.logger.logUpdate(updateKey, update.getKey(), update.getValue());
+            
+            super.debug("Sending update that was requested during election (P[" +
+                                update.getValue().index + "] = " + update.getValue().value +
+                                " to replicas (key: " + updateKey + ", uuid: " +
+                                update.getKey().toString().substring(0, 8) + ")");
+            
+            // askUUID is not needed in this case, so it can be set to a dummy object
+            this.updateWithKey(updateKey, update.getValue(), update.getKey(), UUID.randomUUID());
+            
+            // The key to be assigned to the next update is saved
+            this.updateKey = new CSUpdateKey(this.updateKey.epoch, this.updateKey.seq_no + 1);
         }
     }
     
@@ -924,6 +955,32 @@ public class Replica extends AbstractReplica {
         
         // Become replica again
         this.becomeReplica();
+        
+        // Forward to the new coordinator updates that still have no updateKey (unprocessed update requests)
+        List<Map.Entry<UUID, CSUpdateData>> updates = this.logger.getUpdatesWithoutKey();
+        
+        for (var update : updates) {
+            super.debug("Forwarding unprocessed update with UUID " +
+                                update.getKey().toString().substring(0, 8) +
+                                " to the new coordinator");
+            
+            Duration timeout = Duration.ofMillis((long) super.getMaxLatencyPlusTolerance() * 4);
+            askSystem.<CSUpdate>ask(new CSWriteForward(new CSWriteRequest(update.getValue().index,
+                                                                          update.getValue().value
+                                    ), update.getKey(), update.getValue().clientData
+                                    ), replicas.get(this.coordinatorId), timeout, (res, timedOut) -> {
+                                        if (timedOut) {
+                                            // If the UPDATE message is not received, the coordinator must have crashed
+                                            super.debug("No update received after forwarding request with uuid " +
+                                                                update.getKey().toString().substring(0, 8) +
+                                                                ". Starting election.");
+                                            startElection();
+                                        } else {
+                                            //super.debug("Forward did not time out");
+                                        }
+                                    }
+            );
+        }
     }
     
     private void becomeReplica() {
@@ -1083,9 +1140,10 @@ public class Replica extends AbstractReplica {
                                          .match(CSSynchronization.class,
                                                 this::handleSynchronization
                                          )
-                                         // Temporary
-                                         .match(CSReadRequest.class, this::messageBlackHole)
-                                         .match(CSWriteRequest.class, this::messageBlackHole)
+                                         .match(CSReadRequest.class, this::handleReadRequest)
+                                         .match(CSWriteRequest.class,
+                                                this::handleWriteRequestDuringElection
+                                         )
                                          .match(CSWriteForward.class, this::messageBlackHole)
                                          .match(CSCrashNotice.class, this::messageBlackHole)
                                          .match(CSUpdate.class, this::messageBlackHole)
