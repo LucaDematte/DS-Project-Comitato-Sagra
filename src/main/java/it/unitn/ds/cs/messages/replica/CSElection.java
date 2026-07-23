@@ -14,13 +14,13 @@ import java.util.Map;
  */
 public class CSElection extends CSAskMessage {
     /** A map that stores the key of the most recent update known by each replica. */
-    public final Map<Integer, CSUpdateKey> lastUpdates;
+    private final Map<Integer, CSUpdateKey> lastUpdates;
     /** A map that stores the key of the most recent update applied by each replica. */
-    public final Map<Integer, CSUpdateKey> lastCompleteUpdates;
+    private final Map<Integer, CSUpdateKey> lastCompleteUpdates;
     /** The ID of the replica that started the election process related to this message. */
-    public final int initiatorId;
+    private final int initiatorId;
     /** The ID of the coordinator that, by crashing, caused this election process. */
-    public final int crashedCoordinatorId;
+    private final int crashedCoordinatorId;
     
     public CSElection(
             Map<Integer, CSUpdateKey> lastUpdates, Map<Integer, CSUpdateKey> lastCompleteUpdates,
@@ -34,11 +34,27 @@ public class CSElection extends CSAskMessage {
     }
     
     public CSElection(CSElection msg) {
-        super();
-        this.lastUpdates = Collections.unmodifiableMap(new HashMap<>(msg.lastUpdates));
-        this.lastCompleteUpdates = Collections.unmodifiableMap(new HashMap<>(msg.lastCompleteUpdates));
-        this.initiatorId = msg.initiatorId;
-        this.crashedCoordinatorId = msg.crashedCoordinatorId;
+        this(Collections.unmodifiableMap(new HashMap<>(msg.lastUpdates)),
+             Collections.unmodifiableMap(new HashMap<>(msg.lastCompleteUpdates)),
+             msg.initiatorId,
+             msg.crashedCoordinatorId
+        );
+    }
+    
+    public Map<Integer, CSUpdateKey> getLastUpdates() {
+        return lastUpdates;
+    }
+    
+    public Map<Integer, CSUpdateKey> getLastCompleteUpdates() {
+        return lastCompleteUpdates;
+    }
+    
+    public int getInitiatorId() {
+        return initiatorId;
+    }
+    
+    public int getCrashedCoordinatorId() {
+        return crashedCoordinatorId;
     }
     
     @Override

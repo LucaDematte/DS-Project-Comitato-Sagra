@@ -101,7 +101,11 @@ public class CSUpdateLogger {
     public void setCompleted(CSUpdateKey key) {
         var old = this.updates.get(this.keyToUUIDBindings.get(key));
         this.updates.replace(this.keyToUUIDBindings.get(key),
-                             new CSUpdateData(old.index, old.value, true, old.clientData)
+                             new CSUpdateData(old.getIndex(),
+                                              old.getValue(),
+                                              true,
+                                              old.getClientData()
+                             )
         );
     }
     
@@ -113,7 +117,7 @@ public class CSUpdateLogger {
      */
     public boolean isUpdateCompleted(CSUpdateKey key) {
         CSUpdateData data = this.updates.get(this.keyToUUIDBindings.get(key));
-        return (data != null && data.completed);
+        return (data != null && data.isCompleted());
     }
     
     /**
@@ -150,7 +154,7 @@ public class CSUpdateLogger {
         Set<CSUpdateKey> keys = this.keyToUUIDBindings.keySet()
                                                       .stream()
                                                       .filter(key -> this.updates.get(this.keyToUUIDBindings.get(
-                                                              key)).completed)
+                                                              key)).isCompleted())
                                                       .collect(Collectors.toSet());
         if (keys.isEmpty()) {
             // If the replica doesn't have any update, return an update key that is "before" the first update
@@ -204,9 +208,9 @@ public class CSUpdateLogger {
             }
             
             rtn.append(": P[")
-               .append(update.getValue().index)
+               .append(update.getValue().getIndex())
                .append("] = ")
-               .append(update.getValue().value)
+               .append(update.getValue().getValue())
                .append(", ");
         }
         

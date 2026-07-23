@@ -10,10 +10,10 @@ import java.util.UUID;
  * info at {@link it.unitn.ds.cs.CSAsk}).
  */
 public class CSReadResult extends CSAskMessage {
-    public final boolean success;
-    public final int index;
-    public final int value;
-    public final int replicaId;
+    private final boolean success;
+    private final int index;
+    private final int value;
+    private final int replicaId;
     
     public CSReadResult(boolean success, int index, int value, int replicaId, UUID requestUUID) {
         super(requestUUID);
@@ -21,5 +21,21 @@ public class CSReadResult extends CSAskMessage {
         this.index = index;
         this.value = value;
         this.replicaId = replicaId;
+    }
+    
+    public boolean isSuccess() {
+        return success;
+    }
+    
+    public int getIndex() {
+        return index;
+    }
+    
+    public int getValue() {
+        return value;
+    }
+    
+    public int getReplicaId() {
+        return replicaId;
     }
 }

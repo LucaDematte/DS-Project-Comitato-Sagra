@@ -7,9 +7,13 @@ import java.io.Serializable;
  * The message contains the ID of the new coordinator.
  */
 public class CSSynchronization implements Serializable {
-    public final int newCoordinatorId;
+    private final int newCoordinatorId;
     
     public CSSynchronization(int newCoordinatorId) {
         this.newCoordinatorId = newCoordinatorId;
+    }
+    
+    public int getNewCoordinatorId() {
+        return newCoordinatorId;
     }
 }

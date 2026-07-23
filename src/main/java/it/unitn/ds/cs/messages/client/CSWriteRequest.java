@@ -9,12 +9,26 @@ import it.unitn.ds.cs.messages.CSAskMessage;
  * info at {@link it.unitn.ds.cs.CSAsk}).
  */
 public class CSWriteRequest extends CSAskMessage {
-    public final int index;
-    public final int value;
+    private final int index;
+    private final int value;
     
     public CSWriteRequest(int index, int value) {
         super();
         this.index = index;
         this.value = value;
+    }
+    
+    public CSWriteRequest(CSWriteRequest request) {
+        super(request.getAskUUID());
+        this.index = request.getIndex();
+        this.value = request.getValue();
+    }
+    
+    public int getIndex() {
+        return index;
+    }
+    
+    public int getValue() {
+        return value;
     }
 }

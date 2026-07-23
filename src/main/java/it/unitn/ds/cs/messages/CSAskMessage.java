@@ -12,7 +12,7 @@ import java.util.UUID;
  * request.
  */
 public abstract class CSAskMessage implements Serializable {
-    public final UUID askUUID;
+    private final UUID askUUID;
     
     public CSAskMessage() {
         this.askUUID = UUID.randomUUID();
@@ -20,5 +20,9 @@ public abstract class CSAskMessage implements Serializable {
     
     public CSAskMessage(UUID uuid) {
         this.askUUID = uuid;
+    }
+    
+    public UUID getAskUUID() {
+        return askUUID;
     }
 }

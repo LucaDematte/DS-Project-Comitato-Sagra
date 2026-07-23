@@ -9,10 +9,14 @@ import it.unitn.ds.cs.messages.CSAskMessage;
  * info at {@link it.unitn.ds.cs.CSAsk}).
  */
 public class CSReadRequest extends CSAskMessage {
-    public final int index;
+    private final int index;
     
     public CSReadRequest(int index) {
         super();
         this.index = index;
+    }
+    
+    public int getIndex() {
+        return index;
     }
 }

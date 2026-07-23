@@ -80,10 +80,10 @@ public class Client extends AbstractClient {
         askSystem.<CSReadResult>ask(new CSReadRequest(index), replica, timeout, (res, timedOut) -> {
                                         if (!timedOut) {
                                             // call when the result is received
-                                            callbackOnReadResult(new ReadResult(res.success,
-                                                                                res.index,
-                                                                                res.value,
-                                                                                res.replicaId
+                                            callbackOnReadResult(new ReadResult(res.isSuccess(),
+                                                                                res.getIndex(),
+                                                                                res.getValue(),
+                                                                                res.getReplicaId()
                                             ));
                                         } else {
                                             // call when the timeout expires
@@ -107,14 +107,15 @@ public class Client extends AbstractClient {
                                      (res, timedOut) -> {
                                          if (!timedOut) {
                                              // call when the result is received
-                                             super.debug("Received WriteResult: P[" + res.index +
-                                                                 "] = " + res.value +
-                                                                 " (success = " + res.success +
-                                                                 ")");
-                                             callbackOnWriteResult(new WriteResult(res.success,
-                                                                                   res.index,
-                                                                                   res.value,
-                                                                                   res.replicaId
+                                             super.debug(
+                                                     "Received WriteResult: P[" + res.getIndex() +
+                                                             "] = " + res.getValue() +
+                                                             " (success = " + res.isSuccess() +
+                                                             ")");
+                                             callbackOnWriteResult(new WriteResult(res.isSuccess(),
+                                                                                   res.getIndex(),
+                                                                                   res.getValue(),
+                                                                                   res.getReplicaId()
                                              ));
                                          } else {
                                              // call when the timeout expires

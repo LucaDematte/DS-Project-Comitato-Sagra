@@ -12,14 +12,18 @@ import java.util.UUID;
  * info at {@link it.unitn.ds.cs.CSAsk}).
  */
 public class CSWriteOk extends CSAskMessage {
-    public final CSUpdateKey key;
+    private final CSUpdateKey key;
     
     public CSWriteOk(CSUpdateKey key) {
-        this.key = key;
+        this.key = new CSUpdateKey(key);
     }
     
     public CSWriteOk(CSUpdateKey key, UUID askUUID) {
         super(askUUID);
-        this.key = key;
+        this.key = new CSUpdateKey(key);
+    }
+    
+    public CSUpdateKey getKey() {
+        return key;
     }
 }

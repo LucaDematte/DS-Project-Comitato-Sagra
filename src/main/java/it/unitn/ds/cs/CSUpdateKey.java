@@ -1,6 +1,7 @@
 package it.unitn.ds.cs;
 
 import java.io.Serializable;
+import java.util.Objects;
 
 /**
  * Represents the pair {@code <e, i>} used by the coordinator to define the order of updates.
@@ -42,5 +43,18 @@ public class CSUpdateKey implements Serializable, Comparable<CSUpdateKey> {
             return cmp;
         }
         return Integer.compare(this.seqNo, other.seqNo);
+    }
+    
+    @Override
+    public boolean equals(Object o) {
+        if (o == null || getClass() != o.getClass())
+            return false;
+        CSUpdateKey that = (CSUpdateKey) o;
+        return epoch == that.epoch && seqNo == that.seqNo;
+    }
+    
+    @Override
+    public int hashCode() {
+        return Objects.hash(epoch, seqNo);
     }
 }

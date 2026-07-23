@@ -12,9 +12,13 @@ import java.util.UUID;
  * the request is fired for the "timeout" case.
  */
 public final class CSAskTimeout implements Serializable {
-    public final UUID uuid;
+    private final UUID uuid;
     
     public CSAskTimeout(UUID uuid) {
         this.uuid = uuid;
+    }
+    
+    public UUID getUuid() {
+        return uuid;
     }
 }
