@@ -7,10 +7,19 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Election message that is passed to each replica during the election process.
+ * This method extends {@link CSAskMessage} so that it can be used with the custom ask system (more
+ * info at {@link it.unitn.ds.cs.CSAsk}).
+ */
 public class CSElection extends CSAskMessage {
+    /** A map that stores the key of the most recent update known by each replica. */
     public final Map<Integer, CSUpdateKey> lastUpdates;
+    /** A map that stores the key of the most recent update applied by each replica. */
     public final Map<Integer, CSUpdateKey> lastCompleteUpdates;
+    /** The ID of the replica that started the election process related to this message. */
     public final int initiatorId;
+    /** The ID of the coordinator that, by crashing, caused this election process. */
     public final int crashedCoordinatorId;
     
     public CSElection(

@@ -6,6 +6,8 @@ import java.util.UUID;
 
 /**
  * Message sent by a replica to a client, following a previous read request.
+ * This method extends {@link CSAskMessage} so that it can be used with the custom ask system (more
+ * info at {@link it.unitn.ds.cs.CSAsk}).
  */
 public class CSReadResult extends CSAskMessage {
     public final boolean success;

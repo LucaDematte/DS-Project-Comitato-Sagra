@@ -95,8 +95,9 @@ public class Client extends AbstractClient {
     
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
-        super.debug("Sending write request to " + replica.path()
-                                                         .name() + ": set P[" + index + "] to " + value);
+        super.debug(
+                "Sending write request to " + replica.path().name() + ": set P[" + index + "] to " +
+                        value);
         
         Duration timeout = Duration.ofMillis(getWriteTimeoutDelay());
         
@@ -106,7 +107,10 @@ public class Client extends AbstractClient {
                                      (res, timedOut) -> {
                                          if (!timedOut) {
                                              // call when the result is received
-                                             super.debug("Received WriteResult: P[" + res.index + "] = " + res.value + " (success = " + res.success + ")");
+                                             super.debug("Received WriteResult: P[" + res.index +
+                                                                 "] = " + res.value +
+                                                                 " (success = " + res.success +
+                                                                 ")");
                                              callbackOnWriteResult(new WriteResult(res.success,
                                                                                    res.index,
                                                                                    res.value,

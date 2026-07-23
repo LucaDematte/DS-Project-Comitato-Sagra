@@ -1,7 +1,4 @@
-package it.unitn.ds.cs.logger;
-
-import it.unitn.ds.cs.CSUpdateData;
-import it.unitn.ds.cs.CSUpdateKey;
+package it.unitn.ds.cs;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -12,11 +9,12 @@ import java.util.stream.Collectors;
  * <p>
  * Updates are identified in two ways: when a replica first receives the request from the client,
  * it stores it associated to a new {@link UUID}.
- * This {@link UUID} is propagated to the coordinator so that, when it sends the UPDATE message with
- * the update key, the replica can also identify updates based on the update key.
+ * This {@link UUID} is propagated to the coordinator so that, when it sends the UPDATE message
+ * with the update key ({@link CSUpdateKey}), the replica can also identify updates based on the
+ * update key.
  * </p>
  */
-public class CSLogger {
+public class CSUpdateLogger {
     /** Bindings from update keys to update UUIDs. */
     private final Map<CSUpdateKey, UUID> keyToUUIDBindings = new HashMap<>();
     /** Map that keeps the history of updates, identifying them with UUIDs. */
@@ -42,10 +40,6 @@ public class CSLogger {
      * It must be called by the replicas that receive the update information by the coordinator.
      * The update added by this method is identifiable both by {@link UUID} and by the update key
      * (the binding is done automatically).
-     * <p>
-     * Note: this method doesn't store information about the client, since other replicas don't
-     * need to know the client (they will not be in charge of sending a response to it).
-     * </p>
      *
      * @param key              The update key received from the coordinator along with the update
      *                         data.
@@ -62,6 +56,12 @@ public class CSLogger {
         }
     }
     
+    /**
+     * Returns the update key of an update given its UUID.
+     *
+     * @param uuid The UUID of the update of which the update key is required.
+     * @return The update key.
+     */
     public CSUpdateKey getUpdateKey(UUID uuid) {
         return this.keyToUUIDBindings.entrySet()
                                      .stream()
@@ -81,6 +81,12 @@ public class CSLogger {
         return this.updates.get(this.keyToUUIDBindings.get(key));
     }
     
+    /**
+     * Returns the UUID of an update given its update key.
+     *
+     * @param key The update key of the update of which the UUID is required.
+     * @return The UUID of the update.
+     */
     public UUID getUUID(CSUpdateKey key) {
         return this.keyToUUIDBindings.get(key);
     }
@@ -100,7 +106,7 @@ public class CSLogger {
     }
     
     /**
-     * Check if an update associated to a key has been completed.
+     * Checks if an update associated to a key has been completed.
      *
      * @param key The update key.
      * @return If the update is completed or not.
@@ -110,7 +116,17 @@ public class CSLogger {
         return (data != null && data.completed);
     }
     
-    public CSUpdateKey getLastUpdateKey() {
+    /**
+     * Returns the most recent update key that has been logged.
+     * <p>
+     * NOTE: updates that have not yet been assigned an update key are ignored, even if they have
+     * been logged more recently.
+     * </p>
+     * If no update key is present in the log, [-1, -1] is returned.
+     *
+     * @return The most recent update key.
+     */
+    public CSUpdateKey getMostRecentUpdateKey() {
         if (this.keyToUUIDBindings.isEmpty()) {
             // If the replica doesn't have any update, return an update key that is "before" the first update
             return new CSUpdateKey(-1, -1);
@@ -119,6 +135,17 @@ public class CSLogger {
         }
     }
     
+    /**
+     * Returns the update key of the most recent update that has been completed (applied to the
+     * {@code positions} array)
+     * <p>
+     * NOTE: updates that have not yet been assigned an update key are ignored, even if they have
+     * been logged more recently.
+     * </p>
+     * If no update key is present in the log, [-1, -1] is returned.
+     *
+     * @return The update key ot the most recent completed update.
+     */
     public CSUpdateKey getLastCompleteUpdateKey() {
         Set<CSUpdateKey> keys = this.keyToUUIDBindings.keySet()
                                                       .stream()
@@ -133,6 +160,12 @@ public class CSLogger {
         }
     }
     
+    /**
+     * Returns a sorted list of all update keys that are more recent than the one provided as input.
+     *
+     * @param key The lower bound for update keys to be returned.
+     * @return The sorted list of update keys more recent than the one provided.
+     */
     public List<CSUpdateKey> getUpdateKeysAfter(CSUpdateKey key) {
         List<CSUpdateKey> keyList = new ArrayList<>(this.keyToUUIDBindings.keySet()
                                                                           .stream()
@@ -143,6 +176,11 @@ public class CSLogger {
         return keyList;
     }
     
+    /**
+     * Returns all updates that have not yet been assigned an update key.
+     *
+     * @return A list of map entries, each containing the update UUID as key and the update data as value.
+     */
     public List<Map.Entry<UUID, CSUpdateData>> getUpdatesWithoutKey() {
         return this.updates.entrySet()
                            .stream()

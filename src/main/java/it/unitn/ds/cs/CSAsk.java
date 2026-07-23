@@ -136,11 +136,6 @@ public class CSAsk {
             p.timer.cancel();
         });
         this.pending.clear();
-
-//        for (var p : this.pending.entrySet()) {
-//            p.getValue().timer.cancel();
-//            this.pending.remove(p.getKey());
-//        }
     }
     
     /**

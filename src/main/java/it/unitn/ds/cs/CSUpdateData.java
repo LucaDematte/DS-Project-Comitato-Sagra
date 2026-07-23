@@ -1,7 +1,8 @@
 package it.unitn.ds.cs;
 
-import it.unitn.ds.cs.logger.CSClientData;
-
+/**
+ * Container for all the data about an update that replicas log in their update history.
+ */
 public class CSUpdateData {
     public final int index;
     public final int value;
