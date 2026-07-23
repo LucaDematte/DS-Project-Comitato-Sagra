@@ -18,7 +18,6 @@ import java.util.*;
 import java.util.function.Supplier;
 
 // TODO cosa mettiamo nel main?
-// TODO controllare per il crash dopo aver processato messaggi di elezione
 // TODO controllare che tutti i messaggi contengano dati immutabili
 public class Replica extends AbstractReplica {
     /**
@@ -773,6 +772,11 @@ public class Replica extends AbstractReplica {
             this.electionInitiatorId = this.id;
             
             this.sendIncompleteElectionMsg(electionMsg);
+            
+            // The replica checks if it should crash after sending this election message
+            if (this.crashSystem.shouldCrashAfterThisElectionMessage()) {
+                this.becomeCrashed();
+            }
         }
     }
     
@@ -881,6 +885,11 @@ public class Replica extends AbstractReplica {
                 this.electionInitiatorId = msg.initiatorId;
                 
                 this.sendIncompleteElectionMsg(electionMsg);
+                
+                // The replica checks if it should crash after sending this election message
+                if (this.crashSystem.shouldCrashAfterThisElectionMessage()) {
+                    this.becomeCrashed();
+                }
             } else {
                 // If the message is complete, calculate the winner
                 this.evaluateCompleteElection(msg);
@@ -949,6 +958,11 @@ public class Replica extends AbstractReplica {
             this.synchronizeAndUpdate(msg.lastCompleteUpdates);
         } else {
             this.sendCompleteElectionMsg(msg);
+            
+            // The replica checks if it should crash after sending this election message
+            if (this.crashSystem.shouldCrashAfterThisElectionMessage()) {
+                this.becomeCrashed();
+            }
         }
     }
     
