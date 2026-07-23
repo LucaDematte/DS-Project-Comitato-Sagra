@@ -8,7 +8,7 @@ import it.unitn.ds.cs.CSCrashSystem;
 import it.unitn.ds.cs.CSUpdateData;
 import it.unitn.ds.cs.CSUpdateKey;
 import it.unitn.ds.cs.logger.CSClientData;
-import it.unitn.ds.cs.logger.CSLogger;
+import it.unitn.ds.cs.logger.CSUpdateLogger;
 import it.unitn.ds.cs.messages.CSAskMessage;
 import it.unitn.ds.cs.messages.CSAskTimeout;
 import it.unitn.ds.cs.messages.client.CSHeartBeatCheck;
@@ -56,7 +56,7 @@ public class Replica extends AbstractReplica {
     /** Array of positions of the secret agents (shared data among replicas). */
     int[] positions = new int[AbstractReplica.POSITIONS_LIST_LENGTH];//maybe do a hashmap
     /** System to log update information coming from clients or the coordinator. */
-    final CSLogger logger = new CSLogger();
+    final CSUpdateLogger logger = new CSUpdateLogger();
     /**
      * Flag that signals if a heartbeat message has been received in the time frame of the last
      * second.

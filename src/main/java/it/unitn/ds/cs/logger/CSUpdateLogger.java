@@ -16,7 +16,7 @@ import java.util.stream.Collectors;
  * the update key, the replica can also identify updates based on the update key.
  * </p>
  */
-public class CSLogger {
+public class CSUpdateLogger {
     /** Bindings from update keys to update UUIDs. */
     private final Map<CSUpdateKey, UUID> keyToUUIDBindings = new HashMap<>();
     /** Map that keeps the history of updates, identifying them with UUIDs. */
