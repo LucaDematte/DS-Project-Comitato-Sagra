@@ -5,7 +5,7 @@ Distributed Systems Project at UNITN
 ## Students
 
 - Enrico Dalla Croce
-- Luca Dematte
+- Luca Dematté
 
 ## Documentation
 
