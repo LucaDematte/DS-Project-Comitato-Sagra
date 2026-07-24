@@ -1,6 +1,7 @@
 package it.unitn.ds.cs;
 
 import java.io.Serializable;
+import java.util.Objects;
 
 /**
  * Represents the pair {@code <e, i>} used by the coordinator to define the order of updates.
@@ -14,11 +15,11 @@ public class CSUpdateKey implements Serializable, Comparable<CSUpdateKey> {
     /** The epoch in which the update was processed. */
     public final int epoch;
     /** The sequence number within an epoch. */
-    public final int seq_no;
+    public final int seqNo;
     
-    public CSUpdateKey(int epoch, int seq_no) {
+    public CSUpdateKey(int epoch, int seqNo) {
         this.epoch = epoch;
-        this.seq_no = seq_no;
+        this.seqNo = seqNo;
     }
     
     /**
@@ -27,12 +28,12 @@ public class CSUpdateKey implements Serializable, Comparable<CSUpdateKey> {
      * @param k The key of which a deep copy is needed.
      */
     public CSUpdateKey(CSUpdateKey k) {
-        this(k.epoch, k.seq_no);
+        this(k.epoch, k.seqNo);
     }
     
     @Override
     public String toString() {
-        return "[" + epoch + ", " + seq_no + "]";
+        return "[" + epoch + ", " + seqNo + "]";
     }
     
     @Override
@@ -41,6 +42,19 @@ public class CSUpdateKey implements Serializable, Comparable<CSUpdateKey> {
         if (cmp != 0) {
             return cmp;
         }
-        return Integer.compare(this.seq_no, other.seq_no);
+        return Integer.compare(this.seqNo, other.seqNo);
+    }
+    
+    @Override
+    public boolean equals(Object o) {
+        if (o == null || getClass() != o.getClass())
+            return false;
+        CSUpdateKey that = (CSUpdateKey) o;
+        return epoch == that.epoch && seqNo == that.seqNo;
+    }
+    
+    @Override
+    public int hashCode() {
+        return Objects.hash(epoch, seqNo);
     }
 }

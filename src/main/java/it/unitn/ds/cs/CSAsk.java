@@ -88,12 +88,12 @@ public class CSAsk {
                                         .scheduler()
                                         .scheduleOnce(timeout,
                                                       this.context.self(),
-                                                      new CSAskTimeout(msg.askUUID),
+                                                      new CSAskTimeout(msg.getAskUUID()),
                                                       this.context.dispatcher(),
                                                       ActorRef.noSender()
                                         );
         
-        pending.put(msg.askUUID, new PendingAsk<T>(callback, timer));
+        pending.put(msg.getAskUUID(), new PendingAsk<T>(callback, timer));
         this.sender.send(msg, destination);
     }
     
@@ -104,7 +104,7 @@ public class CSAsk {
      * @param msg The message received (representing a response to a previous request).
      */
     public void handleResponse(CSAskMessage msg) {
-        PendingAsk p = pending.remove(msg.askUUID);
+        PendingAsk p = pending.remove(msg.getAskUUID());
         if (p == null) {
             // If there is no pending ask for this id: the timeout must have already expired or
             // this is a duplicate/unexpected response. It can be safely ignored
@@ -123,7 +123,7 @@ public class CSAsk {
      * @param timeout The timeout message.
      */
     public void handleTimeout(CSAskTimeout timeout) {
-        PendingAsk p = pending.remove(timeout.uuid);
+        PendingAsk p = pending.remove(timeout.getUuid());
         if (p == null) {
             // If there is no pending ask for this id: the response arrived on time, so nothing to do
             return;
@@ -136,11 +136,6 @@ public class CSAsk {
             p.timer.cancel();
         });
         this.pending.clear();
-
-//        for (var p : this.pending.entrySet()) {
-//            p.getValue().timer.cancel();
-//            this.pending.remove(p.getKey());
-//        }
     }
     
     /**
