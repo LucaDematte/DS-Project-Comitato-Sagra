@@ -714,7 +714,7 @@ public class Replica extends AbstractReplica {
                             .stream()
                             .filter(id -> id < replicaId)
                             .max(Integer::compare)
-                            .orElse(Collections.min(this.replicas.keySet()));
+                            .orElse(Collections.max(this.replicas.keySet()));
     }
     
     /**
@@ -731,7 +731,7 @@ public class Replica extends AbstractReplica {
                             .stream()
                             .filter(id -> id > replicaId)
                             .min(Integer::compare)
-                            .orElse(Collections.max(this.replicas.keySet()));
+                            .orElse(Collections.min(this.replicas.keySet()));
     }
     
     /**
@@ -932,7 +932,7 @@ public class Replica extends AbstractReplica {
                 return cmp;
             } else {
                 // spec: "replica identifiers are used to break ties when multiple replicas are equally up to date"
-                return Integer.compare(a.getKey(), b.getKey());
+                return Integer.compare(b.getKey(), a.getKey());
             }
         }).orElseThrow().getKey();
     }
