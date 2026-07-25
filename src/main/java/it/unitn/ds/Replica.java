@@ -512,6 +512,11 @@ public class Replica extends AbstractReplica {
                                           }
                                       }
         );
+        
+        // The replica checks if it should crash after processing this update
+        if (this.crashSystem.shouldCrashAfterThisUpdate()) {
+            this.becomeCrashed();
+        }
     }
     
     /**
