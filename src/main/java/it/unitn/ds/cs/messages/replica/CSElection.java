@@ -19,17 +19,23 @@ public class CSElection extends CSAskMessage {
     private final Map<Integer, CSUpdateKey> lastCompleteUpdates;
     /** The ID of the replica that started the election process related to this message. */
     private final int initiatorId;
+    /**
+     * The number of times the initiator has tried to start an election. Normally has value 1, but
+     * increases when the election gets stuck.
+     */
+    private final int electionAttempt;
     /** The ID of the coordinator that, by crashing, caused this election process. */
     private final int crashedCoordinatorId;
     
     public CSElection(
             Map<Integer, CSUpdateKey> lastUpdates, Map<Integer, CSUpdateKey> lastCompleteUpdates,
-            int initiatorId, int crashedCoordinatorId
+            int initiatorId, int electionAttempt, int crashedCoordinatorId
     ) {
         super();
         this.lastUpdates = Collections.unmodifiableMap(new HashMap<>(lastUpdates));
         this.lastCompleteUpdates = Collections.unmodifiableMap(new HashMap<>(lastCompleteUpdates));
         this.initiatorId = initiatorId;
+        this.electionAttempt = electionAttempt;
         this.crashedCoordinatorId = crashedCoordinatorId;
     }
     
@@ -37,6 +43,7 @@ public class CSElection extends CSAskMessage {
         this(Collections.unmodifiableMap(new HashMap<>(msg.lastUpdates)),
              Collections.unmodifiableMap(new HashMap<>(msg.lastCompleteUpdates)),
              msg.initiatorId,
+             msg.electionAttempt,
              msg.crashedCoordinatorId
         );
     }
@@ -51,6 +58,10 @@ public class CSElection extends CSAskMessage {
     
     public int getInitiatorId() {
         return initiatorId;
+    }
+    
+    public int getElectionAttempt() {
+        return electionAttempt;
     }
     
     public int getCrashedCoordinatorId() {

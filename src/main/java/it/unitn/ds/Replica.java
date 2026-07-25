@@ -88,6 +88,13 @@ public class Replica extends AbstractReplica {
      * </p>
      */
     int electionInitiatorId = -1; // this way the first election received is considered
+    /** Timer for restarting the election if the process gets stuck. */
+    Cancellable electionTimer = null;
+    /**
+     * Counter increased when a replica restarts the election after the election timeout expired.
+     * By increasing the counter, other members won't ignore the election message.
+     */
+    int electionAttempt = 1;
     
     // =================================== COORDINATOR ===================================
     
@@ -679,6 +686,11 @@ public class Replica extends AbstractReplica {
             this.heartBeatTimer.cancel();
             this.heartBeatTimer = null;
         }
+        // Cancel the timer for the election timeout
+        if (this.electionTimer != null) {
+            this.electionTimer.cancel();
+            this.electionTimer = null;
+        }
         getContext().become(crashed());
     }
     
@@ -787,6 +799,7 @@ public class Replica extends AbstractReplica {
             CSElection electionMsg = new CSElection(lastUpdates,
                                                     lastCompleteUpdates,
                                                     this.id,
+                                                    this.electionAttempt,
                                                     this.coordinatorId
             );
             
@@ -886,7 +899,8 @@ public class Replica extends AbstractReplica {
         }
         
         // Check if this election message has to be considered
-        if (msg.getInitiatorId() < this.electionInitiatorId) {
+        if (msg.getElectionAttempt() <= this.electionAttempt &&
+                msg.getInitiatorId() < this.electionInitiatorId) {
             super.debug("Ignoring election initiated by " + msg.getInitiatorId() +
                                 ", still tracking election from " + this.electionInitiatorId);
         } else {
@@ -900,6 +914,7 @@ public class Replica extends AbstractReplica {
                 CSElection electionMsg = new CSElection(lastUpdates,
                                                         lastCompleteUpdates,
                                                         msg.getInitiatorId(),
+                                                        msg.getElectionAttempt(),
                                                         msg.getCrashedCoordinatorId()
                 );
                 
@@ -1037,6 +1052,7 @@ public class Replica extends AbstractReplica {
                                          CSElection newElectionMsg = new CSElection(lastUpdates,
                                                                                     lastCompleteUpdates,
                                                                                     msg.getInitiatorId(),
+                                                                                    msg.getElectionAttempt(),
                                                                                     msg.getCrashedCoordinatorId()
                                          );
                                          // Re-evaluate the message without the crashed replica's data
@@ -1115,8 +1131,14 @@ public class Replica extends AbstractReplica {
         // Reset variables used for election
         this.electing = false;
         this.electionInitiatorId = -1;
+        this.electionAttempt = 1;
         // Remove callbacks from previous state
         this.askSystem.cancelAllCallbacks();
+        // Cancel the timer for the election timeout
+        if (this.electionTimer != null) {
+            this.electionTimer.cancel();
+            this.electionTimer = null;
+        }
         
         this.coordinatorId = this.id;
         getContext().become(coordinator());
@@ -1144,6 +1166,40 @@ public class Replica extends AbstractReplica {
         }
         getContext().become(elector());
         this.electing = true;
+        
+        // Setting a timer to address cases where the election process gets stuck
+        if (this.electionTimer != null) {
+            this.electionTimer.cancel();
+        }
+        Duration timeout = Duration.ofMillis(
+                this.defaultTimeout.toMillis() * this.replicas.size() * 2);
+        this.electionTimer = getContext().system()
+                                         .scheduler()
+                                         .scheduleOnce(timeout,
+                                                       getSelf(),
+                                                       new CSElectionTimeout(),
+                                                       getContext().system().dispatcher(),
+                                                       getSelf()
+                                         );
+        
+    }
+    
+    /**
+     * Handler for election timeout messages.
+     * When an election timeout message is received, it means that the replica is still in election
+     * state by a long time, more than what is required to complete an election even in the worst
+     * case.
+     * This means that the election process must have got stuck, and so it must be restarted.
+     *
+     * @param msg The election timeout message this replica scheduled to itself at the beginning of
+     *            the election.
+     */
+    private void handleElectionTimeout(CSElectionTimeout msg) {
+        super.debug("Timeout for election completion has expired. Starting another election.");
+        
+        this.electing = false;
+        this.electionAttempt += 1;
+        this.startElection();
     }
     
     /**
@@ -1164,6 +1220,12 @@ public class Replica extends AbstractReplica {
         
         // Become replica again
         this.becomeReplica();
+        
+        // Cancel the timer for the election timeout
+        if (this.electionTimer != null) {
+            this.electionTimer.cancel();
+            this.electionTimer = null;
+        }
         
         // Forward to the new coordinator updates that still have no updateKey (unprocessed update requests)
         List<Map.Entry<UUID, CSUpdateData>> updates = this.updateLogger.getUpdatesWithoutKey();
@@ -1200,6 +1262,7 @@ public class Replica extends AbstractReplica {
         // Reset variables used for election
         this.electing = false;
         this.electionInitiatorId = -1;
+        this.electionAttempt = 1;
         // Remove callbacks from previous state
         this.askSystem.cancelAllCallbacks();
         
@@ -1316,6 +1379,7 @@ public class Replica extends AbstractReplica {
                                          )
                                          .match(CSHeartBeatCheck.class, this::handleHeartBeatCheck)
                                          .match(CSElection.class, this::handleElection)
+                                         .match(CSElectionTimeout.class, this::messageBlackHole)
                                          
                                          // hybrid
                                          .match(CSWriteOk.class, this::handleWriteOk)
@@ -1340,6 +1404,7 @@ public class Replica extends AbstractReplica {
                                          )
                                          .match(CSElection.class, this::justAck)
                                          .match(CSSynchronization.class, this::messageBlackHole)
+                                         .match(CSElectionTimeout.class, this::messageBlackHole)
                                          
                                          // ask handlers
                                          .match(CSAck.class, askSystem::handleResponse)
@@ -1356,6 +1421,9 @@ public class Replica extends AbstractReplica {
         return createBaseReceiveBuilder().match(CSElection.class, this::handleElection)
                                          .match(CSSynchronization.class,
                                                 this::handleSynchronization
+                                         )
+                                         .match(CSElectionTimeout.class,
+                                                this::handleElectionTimeout
                                          )
                                          .match(CSReadRequest.class, this::handleReadRequest)
                                          .match(CSWriteRequest.class,
@@ -1395,6 +1463,7 @@ public class Replica extends AbstractReplica {
                                .match(CSHeartBeatCheck.class, this::messageBlackHole)
                                .match(CSElection.class, this::messageBlackHole)
                                .match(CSSynchronization.class, this::messageBlackHole)
+                               .match(CSElectionTimeout.class, this::messageBlackHole)
                                // ask handlers
                                .match(CSAck.class, this::messageBlackHole)
                                .match(CSAskTimeout.class, this::messageBlackHole)
