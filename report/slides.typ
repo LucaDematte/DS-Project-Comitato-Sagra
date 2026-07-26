@@ -1,5 +1,7 @@
 #import "@preview/polylux:0.4.0": *
 #import "@preview/metropolis-polylux:0.1.0" as metropolis
+#import "@preview/chronos:0.3.0"
+
 #import metropolis: new-section, focus
 
 #show: metropolis.setup.with(
@@ -7,7 +9,7 @@
   math-font: "Fira Math",
   code-font: "Fira Code",
   text-size: 23pt,
-  footer: [My cool footer], // defaults to none
+  footer: [],
 )
 
 #slide[
@@ -25,51 +27,39 @@
   #set text(size: .8em, weight: "light")
   Enrico Dalla Croce, Luca Demmaté
 
+  University of Trento
+
   07 July, 2026
 ]
 
 #slide[
-  = Agenda
+  = Outline
 
   #metropolis.outline
 ]
 
-#new-section[My first section]
+#new-section[Design]
 
 #slide[
-  = The Fundamental Theorem of Calculus
+  = Ask System
 
-  For $f = (dif F) / (dif x)$ we _know_ that
-  $
-    integral_a^b f(x) dif x = F(b) - F(a)
-  $
+  
+]
 
-  See `https://en.wikipedia.org/wiki/Fundamental_theorem_of_calculus`
+#new-section[See it in action]
+
+#slide[
+  = Update Protocol
+
+  #chronos.diagram({
+    import chronos: *
+    _par("Alice")
+    _par("Bob")
+  })
 ]
 
 #slide[
-  slide without a title
-]
+  = Election
 
-#new-section[My second section]
-
-#slide[
-  = Heron algorithm
-
-  ```julia
-  function heron(x)
-      r = x
-      while abs(r^2 - x) > eps()
-          r = (r + x / r) / 2
-      end
-      return r
-  end
-
-  @test heron(42) ≈ sqrt(42)
-  ```
-]
-
-#slide[
-  #show: focus
-  Something very important
+  animazione con cosa succede
 ]

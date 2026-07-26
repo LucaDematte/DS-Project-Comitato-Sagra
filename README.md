@@ -2,12 +2,18 @@
 
 Distributed Systems Project at UNITN
 
-## Students
+## Group "Comitato Sagra"
 
+Students:
 - Enrico Dalla Croce
 - Luca Dematté
 
 ## Documentation
 
-The functions are documented in JavaDoc Style and the code is extensively documented with inline
-comments and debug prints
+In the [report](report/report.pdf) you can find a high level description of the implementation
+
+The code is extensively documented with inline comments and debug prints. In addition functions and methods are documentation in JavaDoc style
+
+### Presentation
+
+You can also find  the [slides](report/slides.pdf) used for the project presentation.
