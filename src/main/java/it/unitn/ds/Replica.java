@@ -17,7 +17,6 @@ import java.time.Duration;
 import java.util.*;
 import java.util.function.Supplier;
 
-// TODO cosa mettiamo nel main?
 public class Replica extends AbstractReplica {
     /**
      * System to send messages (with ask) that expect a response within a given timeout.
@@ -247,7 +246,7 @@ public class Replica extends AbstractReplica {
                                                         writeRequestUUID.toString()
                                                                         .substring(0, 8) +
                                                         ". Starting election.");
-                                        startElection();
+                                        this.startElection();
                                     } else {
                                         //super.debug("Forward did not time out");
                                     }
